@@ -1426,15 +1426,18 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             "正在从 GitHub 下载最新版...", "", 0, 0, self)
         progress.setWindowTitle("市场更新")
         progress.setWindowModality(Qt.WindowModal)
-        progress.setCancelButton(None)
+        progress.setCancelButtonText("取消")
         progress.setMinimumDuration(0)
         progress.show()
         QtWidgets.QApplication.processEvents()
 
         try:
-            copied = self._download_market_update()
+            copied = self._download_market_update(progress)
         except Exception as exc:
             progress.close()
+            if progress.wasCanceled():
+                self.notify("已取消市场更新", False)
+                return
             QtWidgets.QMessageBox.warning(
                 self, "更新失败", "无法从 GitHub 下载更新：\n%s" % exc)
             cmds.warning("插件市场更新失败：%s" % exc)
@@ -1446,15 +1449,25 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self, "更新完成",
             "市场代码已覆盖更新：\n%s\n\n关闭并重新打开市场后生效。" % "\n".join(copied))
 
-    def _download_market_update(self):
+    def _download_market_update(self, progress=None):
         request = UrlRequest(
             UPDATE_ZIP_URL,
             headers={"User-Agent": "MayaNodeMarket/%s" % TOOL_VERSION})
         response = urlopen(request, timeout=30)
+        chunks = []
         try:
-            data = response.read()
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if progress is not None:
+                    QtWidgets.QApplication.processEvents()
+                    if progress.wasCanceled():
+                        raise IOError("更新已取消")
         finally:
             response.close()
+        data = b"".join(chunks)
         if not data or len(data) < 512:
             raise IOError("GitHub 返回的更新包为空")
 
