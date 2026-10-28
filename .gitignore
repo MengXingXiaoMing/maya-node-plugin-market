@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+market_cache.json
+market_state.json
+market_settings.json
+nodes/
