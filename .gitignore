@@ -3,4 +3,5 @@ __pycache__/
 market_cache.json
 market_state.json
 market_settings.json
+market_catalog_cache.json
 nodes/
