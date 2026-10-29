@@ -31,7 +31,7 @@ INDEX_REPO = "maya-node-plugin-index"
 INDEX_BRANCH = "main"
 INDEX_URL = "https://github.com/%s/%s" % (INDEX_OWNER, INDEX_REPO)
 CACHE_VERSION = 1
-USER_AGENT = "MayaNodeMarket/2.8"
+USER_AGENT = "MayaNodeMarket/2.9"
 
 
 class Cancelled(Exception):
@@ -208,19 +208,6 @@ def version_tuple(value):
 
 def is_newer(new_version, old_version):
     return version_tuple(new_version) > version_tuple(old_version)
-
-
-def maya_major(version_text):
-    match = re.search(r"20\d{2}", str(version_text or ""))
-    return match.group(0) if match else ""
-
-
-def supports_maya(entry, version_text):
-    """条目没写 maya_versions 时视为不限制版本。"""
-    wanted = maya_major(version_text)
-    if not entry.maya_versions or not wanted:
-        return True
-    return any(wanted == maya_major(item) for item in entry.maya_versions)
 
 
 BACKUP_KEEP = 5
