@@ -62,10 +62,12 @@ except Exception:
 
 import node_market
 import online_market
+import scene_requirements
 importlib.reload(node_market)
 importlib.reload(online_market)
+importlib.reload(scene_requirements)
 
-TOOL_VERSION = "2.5"
+TOOL_VERSION = "2.7"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -78,6 +80,7 @@ UPDATE_FILES = (
     "custom_commands_window.py",
     "node_market.py",
     "online_market.py",
+    "scene_requirements.py",
     "install.py",
     "open_window.py",
     "custom_commands_lcon.png",
@@ -257,12 +260,21 @@ QDialog#detailDialog { background: #22242a; }
 # 设置
 # ---------------------------------------------------------------------------
 def load_settings():
-    default = {"nodes_dir": DEFAULT_NODES_DIR, "github_url": MARKET_GITHUB_URL}
+    default = {
+        "nodes_dir": DEFAULT_NODES_DIR,
+        "github_url": MARKET_GITHUB_URL,
+        "scene_check": True,
+    }
     try:
         with io.open(SETTINGS_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
         if isinstance(data, dict):
-            default.update({k: v for k, v in data.items() if v})
+            for key, value in data.items():
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value:
+                    continue
+                default[key] = value
     except Exception:
         pass
     if not default.get("nodes_dir") or not os.path.isdir(default.get("nodes_dir")):
@@ -1113,6 +1125,95 @@ class TaskProgressDialog(QtWidgets.QDialog):
         self.close()
 
 
+class SceneRequirementsDialog(QtWidgets.QDialog):
+    """打开文件后提示：这个场景缺少哪些节点插件，可以一键安装。"""
+
+    def __init__(self, scene_path, entries, local_plugins, unmatched, parent=None):
+        super(SceneRequirementsDialog, self).__init__(parent)
+        self.setObjectName("detailDialog")
+        self.setWindowTitle("当前文件缺少节点插件")
+        self.setMinimumWidth(560)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self._local_plugins = list(local_plugins or [])
+        self.wants_load_local = False
+        self.checkboxes = []
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(9)
+
+        title = QtWidgets.QLabel("当前文件缺少节点插件")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+
+        scene_name = os.path.basename(scene_path) if scene_path else "未保存的场景"
+        hint = QtWidgets.QLabel(
+            "「%s」用到了本机没有安装的节点。继续保存可能丢失这些节点的数据。" % scene_name)
+        hint.setObjectName("dialogDesc")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        if entries:
+            label = QtWidgets.QLabel("在线目录里可以安装：")
+            label.setObjectName("fieldLabel")
+            layout.addWidget(label)
+            for entry in entries:
+                text = "%s   v%s   %s" % (
+                    entry.title, entry.version or "—", entry.author or "未署名")
+                box = QtWidgets.QCheckBox(node_market.shorten(text, 54))
+                box.setObjectName("filterCheck")
+                box.setChecked(True)
+                box.setToolTip("%s\n节点：%s · %s" % (
+                    entry.description or "", entry.node_name, entry.node_id_text))
+                layout.addWidget(box)
+                self.checkboxes.append((box, entry))
+        else:
+            label = QtWidgets.QLabel("在线目录里没有找到对应的插件。")
+            label.setObjectName("fieldLabel")
+            layout.addWidget(label)
+
+        if self._local_plugins:
+            names = "、".join(plugin.title for plugin in self._local_plugins)
+            self.local_box = QtWidgets.QCheckBox(
+                "本地已安装但未加载：%s" % node_market.shorten(names, 34))
+            self.local_box.setObjectName("filterCheck")
+            self.local_box.setChecked(True)
+            layout.addWidget(self.local_box)
+        else:
+            self.local_box = None
+
+        if unmatched:
+            warn = QtWidgets.QLabel(
+                "目录里也没有这些插件：%s\n请联系文件作者获取插件后再打开。" % (
+                    "、".join(unmatched[:8])))
+            warn.setObjectName("hint")
+            warn.setWordWrap(True)
+            layout.addWidget(warn)
+
+        layout.addStretch(1)
+        buttons = QtWidgets.QHBoxLayout()
+        later = QtWidgets.QPushButton("稍后")
+        later.setObjectName("ghostButton")
+        later.clicked.connect(self.reject)
+        buttons.addWidget(later)
+        buttons.addStretch(1)
+        action = QtWidgets.QPushButton("安装所选并重开文件")
+        action.setObjectName("primaryButton")
+        action.setEnabled(bool(entries) or bool(self._local_plugins))
+        action.clicked.connect(self.accept)
+        buttons.addWidget(action)
+        layout.addLayout(buttons)
+
+        self.setStyleSheet(QSS)
+
+    def selected_entries(self):
+        return [entry for box, entry in self.checkboxes if box.isChecked()]
+
+    def accept(self):
+        self.wants_load_local = bool(self.local_box and self.local_box.isChecked())
+        super(SceneRequirementsDialog, self).accept()
+
+
 # ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
@@ -1129,6 +1230,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         settings = load_settings()
         self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
         self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
+        self.scene_check = bool(settings.get("scene_check", True))
         if not os.path.isdir(self.nodes_dir):
             try:
                 os.makedirs(self.nodes_dir)
@@ -1162,6 +1264,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.online_stars = {}
         self._stars_worker = None
         self.market_update_available = ""
+        self.scene_hook_ids = []
+        self._scene_prompted = set()
+        self._scene_reopen_guard = False
         cached, cached_at = online_market.load_catalog_cache(CATALOG_CACHE_PATH)
         if cached:
             self.online_catalog = cached
@@ -1173,6 +1278,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.switch_tab(0)
         QtCore.QTimer.singleShot(0, self.fetch_online_catalog)
         QtCore.QTimer.singleShot(400, self.check_market_version)
+        self.register_scene_hook()
 
     # ------------------------------------------------------------------
     # 建界面
@@ -1638,6 +1744,28 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         links_card.layout().addWidget(self.node_id_button)
         links_card.layout().addWidget(self.github_button)
 
+        # 场景依赖检测
+        scene_card = self._settings_card(
+            "场景依赖检测",
+            "打开文件时发现缺少的节点插件会提示并支持一键安装；只在市场窗口打开的这一会话生效。")
+        self.scene_check_box = QtWidgets.QCheckBox("打开文件时检测缺失节点")
+        self.scene_check_box.setObjectName("filterCheck")
+        self.scene_check_box.setCursor(Qt.PointingHandCursor)
+        self.scene_check_box.setChecked(self.scene_check)
+        self.scene_check_box.toggled.connect(self.on_scene_check_toggled)
+        self.scene_check_button = QtWidgets.QPushButton("立即检查当前文件")
+        self.scene_check_button.setObjectName("ghostButton")
+        self.scene_check_button.setCursor(Qt.PointingHandCursor)
+        self.scene_check_button.setToolTip("检查当前场景缺少哪些节点插件")
+        self.scene_check_button.clicked.connect(
+            lambda: self.check_scene_requirements(auto=False))
+        scene_row = QtWidgets.QHBoxLayout()
+        scene_row.setSpacing(8)
+        scene_row.addWidget(self.scene_check_box)
+        scene_row.addStretch(1)
+        scene_row.addWidget(self.scene_check_button)
+        scene_card.layout().addLayout(scene_row)
+
         # 规则
         rule_card = self._settings_card("命名与加载规则", "市场不识别文件夹本身，只识别节点。")
         rule_text = QtWidgets.QLabel(
@@ -1698,6 +1826,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
         host_layout.addWidget(dir_card)
         host_layout.addWidget(links_card)
+        host_layout.addWidget(scene_card)
         host_layout.addWidget(rule_card)
         host_layout.addWidget(status_card)
         host_layout.addWidget(about_card)
@@ -2389,6 +2518,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not hasattr(self, "scan_summary"):
             return
         self.path_edit.setText(self.nodes_dir)
+        if hasattr(self, "scene_check_box"):
+            self.scene_check_box.setChecked(self.scene_check)
         self.github_button.setText("插件市场 GitHub 仓库  →  %s" % self.github_url)
         self.scan_summary.setText(
             "已识别 %d 个节点插件  ·  扫描 %d 个文件夹  ·  %d 个节点文件  ·  "
@@ -2750,6 +2881,134 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         save_settings(data)
         self.refresh()
         self.notify("插件目录已更新", True)
+
+    # ------------------------------------------------------------------
+    # 场景依赖检测
+    # ------------------------------------------------------------------
+    def register_scene_hook(self):
+        if not self.scene_check or self.scene_hook_ids:
+            return
+        self.scene_hook_ids = scene_requirements.add_scene_callback(self.on_scene_opened)
+
+    def on_scene_opened(self, *args):
+        if self._scene_reopen_guard:
+            return
+        QtCore.QTimer.singleShot(600, lambda: self.check_scene_requirements(auto=True))
+
+    def on_scene_check_toggled(self, checked):
+        self.scene_check = bool(checked)
+        data = load_settings()
+        data["scene_check"] = self.scene_check
+        save_settings(data)
+        if self.scene_check:
+            self.register_scene_hook()
+        else:
+            scene_requirements.remove_scene_callbacks(self.scene_hook_ids)
+            self.scene_hook_ids = []
+
+    def scene_catalog_entries(self):
+        if self.online_entries:
+            return self.online_entries
+        cached, _ = online_market.load_catalog_cache(CATALOG_CACHE_PATH)
+        if cached:
+            return online_market.entries_from_catalog(cached)
+        return []
+
+    def check_scene_requirements(self, auto=True):
+        if auto and not self.scene_check:
+            return
+        missing = scene_requirements.missing_plugins()
+        if not missing:
+            if not auto:
+                self.notify("当前文件没有缺失的节点插件", True)
+            return
+
+        entries = self.scene_catalog_entries()
+        if not entries and not auto:
+            try:
+                entries = online_market.entries_from_catalog(online_market.fetch_catalog())
+            except Exception as exc:
+                self.notify("在线目录加载失败：%s" % exc, False)
+                return
+
+        matched, local, unmatched = scene_requirements.match_requirements(
+            missing, entries, self.plugins)
+        scene_path = scene_requirements.current_scene()
+        signature = (scene_path, tuple(sorted(missing)))
+        if auto and signature in self._scene_prompted:
+            return
+        self._scene_prompted.add(signature)
+
+        dialog = SceneRequirementsDialog(scene_path, matched, local, unmatched, self)
+        if not exec_dialog(dialog):
+            return
+        if dialog.wants_load_local:
+            for plugin in local:
+                node_market.load_plugin_file(plugin.path)
+        chosen = dialog.selected_entries()
+        if chosen:
+            self.install_scene_entries(chosen)
+        elif dialog.wants_load_local and local:
+            self.ask_reopen_scene()
+
+    def install_scene_entries(self, entries):
+        dialog = TaskProgressDialog(
+            "安装场景所需插件", "共 %d 个插件" % len(entries), self)
+        dialog.set_stage("准备安装...", 1, "")
+        dialog.show()
+        QtWidgets.QApplication.processEvents()
+
+        failed = []
+        for index, entry in enumerate(entries, 1):
+            def report(stage, message, percent=None, detail="", i=index, e=entry):
+                dialog.set_stage(
+                    message, percent,
+                    "%s（%d/%d）\n%s" % (e.title, i, len(entries), detail))
+                QtWidgets.QApplication.processEvents()
+                if stage != "done" and dialog.was_cancelled():
+                    raise online_market.Cancelled()
+
+            try:
+                online_market.install_entry(entry, self.nodes_dir, report)
+            except online_market.Cancelled:
+                break
+            except Exception as exc:
+                failed.append("%s：%s" % (entry.title, exc))
+
+        dialog.finish()
+        self.refresh()
+        if failed:
+            cmds.warning("场景插件安装失败：\n" + "\n".join(failed))
+            self.notify("有 %d 个插件安装失败" % len(failed), False)
+        self.ask_reopen_scene()
+
+    def ask_reopen_scene(self):
+        reply = QtWidgets.QMessageBox.question(
+            self, "需要重新打开文件",
+            "插件已经安装/加载，但 Maya 不会把已经变成 unknown 的节点自动恢复。\n"
+            "现在重新打开当前文件？未保存的修改会丢失。",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes)
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.reopen_scene()
+
+    def reopen_scene(self):
+        path = scene_requirements.current_scene()
+        if not path:
+            self.notify("当前文件还没保存过，请手动重新打开", False)
+            return
+        self._scene_reopen_guard = True
+        try:
+            cmds.file(path, open=True, force=True)
+        except Exception as exc:
+            self.notify("重新打开失败：%s" % exc, False)
+        finally:
+            self._scene_reopen_guard = False
+
+    def closeEvent(self, event):
+        scene_requirements.remove_scene_callbacks(self.scene_hook_ids)
+        self.scene_hook_ids = []
+        super(MarketWindow, self).closeEvent(event)
 
     # ------------------------------------------------------------------
     def resizeEvent(self, event):
