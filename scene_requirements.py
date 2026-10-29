@@ -122,6 +122,13 @@ def collect_requirements(plugins):
         node_name = getattr(plugin, "node_name", "")
         if not node_name:
             continue
+        # 没加载的插件在 Maya 里 ls(type=...) 会刷错误，先跳过
+        try:
+            import node_market
+            if not node_market.plugin_loaded(plugin.path):
+                continue
+        except Exception:
+            continue
         try:
             if not cmds.ls(type=node_name):
                 continue
@@ -140,13 +147,28 @@ def save_requirements(plugins):
     """把「这个文件用到哪些节点插件」写进场景 fileInfo，随文件一起保存。"""
     items = collect_requirements(plugins)
     try:
-        if items:
-            cmds.fileInfo(REQUIREMENTS_KEY, json.dumps(items, ensure_ascii=False))
-        else:
-            cmds.fileInfo(REQUIREMENTS_KEY, query=True, remove=True)
+        cmds.fileInfo(
+            REQUIREMENTS_KEY,
+            json.dumps(items, ensure_ascii=False) if items else "[]")
     except Exception:
         return []
     return items
+
+
+def _parse_requirements(text):
+    """Maya 的 fileInfo 会把双引号转义成 \\"，这里两种都试一次。"""
+    candidates = [text]
+    unescaped = text.replace('\\"', '"').replace("\\\\", "\\")
+    if unescaped != text:
+        candidates.append(unescaped)
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(data, list):
+            return data
+    return []
 
 
 def read_requirements():
@@ -162,11 +184,7 @@ def read_requirements():
     text = text.strip()
     if not text:
         return []
-    try:
-        data = json.loads(text)
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
+    return _parse_requirements(text)
 
 
 def requirement_node_ids():
