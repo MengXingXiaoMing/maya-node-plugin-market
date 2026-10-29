@@ -8,6 +8,7 @@
 
 from __future__ import absolute_import, unicode_literals
 
+import hashlib
 import io
 import json
 import os
@@ -139,6 +140,7 @@ class CatalogEntry(object):
         self.entry = node_market.to_text(self.raw.get("entry"))
         self.branch = node_market.to_text(self.raw.get("branch")) or INDEX_BRANCH
         self.asset = node_market.to_text(self.raw.get("asset") or self.raw.get("tarball"))
+        self.sha256 = node_market.to_text(self.raw.get("sha256") or self.raw.get("digest"))
         self.icon = node_market.to_text(self.raw.get("icon"))
         self.run = node_market.to_text(self.raw.get("run"))
         self.github = node_market.to_text(self.raw.get("github")) or (
@@ -243,6 +245,53 @@ def human_bytes(value):
     if value >= 1024:
         return "%.1f KB" % (value / 1024.0)
     return "%d B" % value
+
+
+MARKET_REPO = "maya-node-plugin-market"
+
+
+def fetch_remote_version(timeout=10):
+    """读取市场仓库的 version.json，用来提示客户端有新版本。"""
+    stamp = int(time.time())
+    urls = [
+        "https://cdn.jsdelivr.net/gh/%s/%s@main/version.json?t=%d" % (
+            INDEX_OWNER, MARKET_REPO, stamp),
+        "https://raw.githubusercontent.com/%s/%s/main/version.json" % (
+            INDEX_OWNER, MARKET_REPO),
+    ]
+    for url in urls:
+        try:
+            data = json.loads(_read_url(url, timeout).decode("utf-8"))
+            version = node_market.to_text((data or {}).get("version"))
+            if version:
+                return version
+        except Exception:
+            continue
+    return ""
+
+
+def fetch_repo_stars(repos, timeout=8, limit=12):
+    """匿名查 GitHub star 数，作为插件热度参考；失败就跳过。"""
+    stars = {}
+    for repo in list(repos)[:limit]:
+        try:
+            data = json.loads(_read_url(
+                "https://api.github.com/repos/%s" % repo, timeout).decode("utf-8"))
+            stars[repo] = int(data.get("stargazers_count") or 0)
+        except Exception:
+            continue
+    return stars
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with io.open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(128 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _report(report, stage, message, percent=None, detail=""):
@@ -387,6 +436,26 @@ def validate_package(folder, entry):
     return plugin
 
 
+def write_install_manifest(target, entry, archive_path):
+    """记录安装来源和摘要，方便以后核对本地版本是不是被改过。"""
+    try:
+        payload = {
+            "node_id": entry.node_id_text,
+            "version": entry.version,
+            "updated": entry.updated,
+            "source": entry.repo or entry.asset,
+            "subpath": entry.subpath,
+            "entry": entry.entry,
+            "sha256": entry.sha256 or sha256_of(archive_path),
+            "installed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        path = os.path.join(target, ".market.json")
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
 def install_entry(entry, nodes_dir, report=None):
     """下载并安装一个目录条目，返回安装目录。
 
@@ -419,6 +488,12 @@ def install_entry(entry, nodes_dir, report=None):
         _report(report, "download", "插件包下载完成", 58,
                 "已下载 %s" % human_bytes(os.path.getsize(archive_path)))
 
+        if entry.sha256:
+            actual = sha256_of(archive_path)
+            if actual.lower() != entry.sha256.lower():
+                raise IOError("插件包校验失败：sha256 不匹配（%s…）" % actual[:12])
+            _report(report, "verify", "插件包校验通过", 61, "sha256：%s…" % actual[:16])
+
         _report(report, "extract", "正在解压插件包...", 64, source_label)
         source_dir = _extract_package(archive_path, entry, temp_dir)
 
@@ -445,6 +520,7 @@ def install_entry(entry, nodes_dir, report=None):
             if backup_path and os.path.isdir(backup_path):
                 shutil.move(backup_path, target)
             raise
+        write_install_manifest(target, entry, archive_path)
         _report(report, "done", "安装完成", 100, target)
         return target
     finally:
