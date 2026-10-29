@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.0"
+TOOL_VERSION = "3.1.1"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -496,6 +496,16 @@ QLineEdit#pathEdit {
     padding: 6px 10px; color: #dfe3ea; font-size: 12px;
 }
 QLineEdit#pathEdit:focus { border-color: #5b9dff; }
+QLineEdit#submitEdit {
+    background: #1b1d22; border: 1px solid #3a3d46; border-radius: 8px;
+    padding: 6px 10px; color: #dfe3ea; font-size: 12px;
+}
+QLineEdit#submitEdit:focus { border-color: #5b9dff; }
+QPlainTextEdit#submitPreview {
+    background: #1b1d22; border: 1px solid #333640; border-radius: 8px;
+    color: #9fb6d8; font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 11px; padding: 8px;
+}
 #tabs { background: #1b1d22; border: 1px solid #333640; border-radius: 10px; }
 QPushButton#tabButton {
     background: transparent; color: #9aa1ad; border: none;
@@ -997,6 +1007,9 @@ class PluginCard(QtWidgets.QFrame):
         menu.addAction("取消收藏" if self._favorite else "收藏插件",
                        lambda: self._favorite_clicked())
         menu.addAction("重新扫描", lambda: self._on_menu("refresh"))
+        menu.addSeparator()
+        menu.addAction("投稿到在线目录（无需 Token）",
+                       lambda: self._on_menu("submit", self.plugin))
         if node_market.plugin_loaded(self.plugin.path):
             menu.addSeparator()
             menu.addAction("卸载插件", lambda: self._on_menu("unload", self.plugin))
@@ -1724,6 +1737,199 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
     def accept(self):
         self.wants_load_local = bool(self.local_box and self.local_box.isChecked())
         super().accept()
+
+
+# ---------------------------------------------------------------------------
+# 投稿到在线目录（无需 Token）
+# ---------------------------------------------------------------------------
+def _valid_repo(text):
+    """校验 owner/repo 格式，和服务端 validate_pr.py 的规则保持一致。"""
+    parts = (text or "").strip().split("/")
+    if len(parts) != 2:
+        return False
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+    for part in parts:
+        if not part or part in (".", ".."):
+            return False
+        if any(ch not in allowed for ch in part):
+            return False
+    return True
+
+
+class SubmissionDialog(QtWidgets.QDialog):
+    """把本地节点投稿到在线目录。
+
+    不碰 git、不需要 Token：生成好 plugins/<node_id>.json，打开 GitHub 网页的
+    「新建文件」地址并把内容预填进去，登录状态下点两次就自动开 PR，Actions
+    校验通过后自动合并。
+    """
+
+    def __init__(self, plugin, parent=None):
+        super().__init__(parent)
+        self.plugin = plugin
+        self.entry = online_market.build_submission_entry(plugin)
+        self.setObjectName("envDialog")
+        self.setWindowTitle(u"投稿到在线目录")
+        self.setWindowFlags(
+            self.windowFlags() | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setMinimumWidth(600)
+        self.setMouseTracking(True)
+        self._dragging = False
+        self._drag_pos = QtCore.QPoint()
+        self._build_ui()
+        self.setStyleSheet(QSS)
+        self._refresh()
+
+    # ---------------- 无边框拖动 ----------------
+    def _in_header(self, pos):
+        return getattr(self, "_header_geom", QtCore.QRect()).contains(pos)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._in_header(event.pos()):
+            self._dragging = True
+            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        super().mouseReleaseEvent(event)
+
+    # ---------------- 界面 ----------------
+    def _build_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        header = QtWidgets.QFrame()
+        header.setObjectName("envHeader")
+        header.setFixedHeight(44)
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 0, 12, 0)
+        header_layout.setSpacing(10)
+
+        icon = QtWidgets.QLabel()
+        icon.setFixedSize(18, 18)
+        icon.setStyleSheet(
+            "background:#4a86e8;border-radius:4px;color:white;"
+            "font-weight:bold;font-size:10px;padding-left:4px;")
+        icon.setText(u"↑")
+        header_layout.addWidget(icon, 0, Qt.AlignVCenter)
+
+        title = QtWidgets.QLabel(u"投稿到在线目录")
+        title.setObjectName("envTitle")
+        header_layout.addWidget(title, 0, Qt.AlignVCenter)
+        header_layout.addStretch(1)
+
+        close_btn = QtWidgets.QPushButton(u"×")
+        close_btn.setObjectName("winClose")
+        close_btn.setFixedSize(30, 24)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setToolTip(u"关闭")
+        close_btn.clicked.connect(self.reject)
+        header_layout.addWidget(close_btn, 0, Qt.AlignVCenter)
+
+        outer.addWidget(header)
+        self._header_geom = QtCore.QRect(0, 0, self.width(), header.height())
+
+        body = QtWidgets.QWidget()
+        body_layout = QtWidgets.QVBoxLayout(body)
+        body_layout.setContentsMargins(18, 14, 18, 14)
+        body_layout.setSpacing(10)
+
+        tip = QtWidgets.QLabel(
+            u"无需 Token：点「打开 GitHub 提交页」会把条目内容预填进网页，"
+            u"登录状态下点两次即可自动提 PR。")
+        tip.setObjectName("envTip")
+        tip.setWordWrap(True)
+        body_layout.addWidget(tip)
+
+        self.repo_edit = self._add_field(body_layout, u"你的 GitHub 仓库（owner/repo）",
+                                        self.entry.get("repo", ""))
+        self.subpath_edit = self._add_field(body_layout, u"插件所在目录（可留空）",
+                                           self.entry.get("subpath", ""))
+        self.entry_edit = self._add_field(body_layout, u"入口文件（注册节点的 .py）",
+                                         self.entry.get("entry", ""))
+
+        self.preview = QtWidgets.QPlainTextEdit()
+        self.preview.setObjectName("submitPreview")
+        self.preview.setReadOnly(True)
+        self.preview.setFixedHeight(150)
+        body_layout.addWidget(self.preview)
+
+        self.status_label = QtWidgets.QLabel("")
+        self.status_label.setObjectName("envTip")
+        self.status_label.setWordWrap(True)
+        body_layout.addWidget(self.status_label)
+
+        buttons = QtWidgets.QHBoxLayout()
+        copy_btn = QtWidgets.QPushButton(u"复制 JSON")
+        copy_btn.setObjectName("ghostButton")
+        copy_btn.clicked.connect(self._copy_json)
+        buttons.addWidget(copy_btn)
+        buttons.addStretch(1)
+        self.open_btn = QtWidgets.QPushButton(u"打开 GitHub 提交页")
+        self.open_btn.setObjectName("primaryButton")
+        self.open_btn.clicked.connect(self._open_page)
+        buttons.addWidget(self.open_btn)
+        body_layout.addLayout(buttons)
+
+        outer.addWidget(body, 1)
+
+    def _add_field(self, layout, label_text, value):
+        label = QtWidgets.QLabel(label_text)
+        label.setObjectName("fieldLabel")
+        layout.addWidget(label)
+        edit = QtWidgets.QLineEdit(value or "")
+        edit.setObjectName("submitEdit")
+        edit.textChanged.connect(self._refresh)
+        layout.addWidget(edit)
+        return edit
+
+    # ---------------- 逻辑 ----------------
+    def current_entry(self):
+        entry = dict(self.entry)
+        entry["repo"] = self.repo_edit.text().strip()
+        entry["subpath"] = self.subpath_edit.text().strip()
+        entry["entry"] = self.entry_edit.text().strip()
+        return entry
+
+    def _refresh(self):
+        if not hasattr(self, "preview"):
+            return
+        entry = self.current_entry()
+        self.preview.setPlainText(json.dumps(entry, ensure_ascii=False, indent=2))
+        if not _valid_repo(entry["repo"]):
+            self.status_label.setText(
+                u"仓库必须填你自己的公开仓库，格式 owner/repo"
+                u"（owner 要和你的 GitHub 账号一致，否则自动合并会驳回）。")
+            self.open_btn.setEnabled(False)
+        elif not entry["entry"]:
+            self.status_label.setText(u"请填写入口文件（注册节点的 .py 文件名）。")
+            self.open_btn.setEnabled(False)
+        else:
+            self.status_label.setText(
+                u"提交前请确认插件代码已经上传到该仓库，否则校验会失败。")
+            self.open_btn.setEnabled(True)
+
+    def _copy_json(self):
+        QtWidgets.QApplication.clipboard().setText(self.preview.toPlainText())
+        self.status_label.setText(u"已复制到剪贴板。")
+
+    def _open_page(self):
+        entry = self.current_entry()
+        if not _valid_repo(entry["repo"]):
+            return
+        open_url(online_market.submission_url(entry))
+        self.status_label.setText(u"已在浏览器打开 GitHub 提交页，登录后确认即可。")
 
 
 # ---------------------------------------------------------------------------
@@ -3506,6 +3712,13 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.delete_plugin(plugin)
         elif action == "autoload" and plugin is not None:
             self.toggle_autoload(plugin, bool(checked))
+        elif action == "submit" and plugin is not None:
+            self.submit_to_catalog(plugin)
+
+    def submit_to_catalog(self, plugin):
+        """把节点投稿到在线目录：不碰 git、不需要 Token。"""
+        dialog = SubmissionDialog(plugin, self)
+        dialog.exec_()
 
     def toggle_autoload(self, plugin, enabled):
         set_autoload(plugin, enabled)
