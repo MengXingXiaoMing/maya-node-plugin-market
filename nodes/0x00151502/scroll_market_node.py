@@ -13,7 +13,7 @@ NODE_INFO = {
     "description": "打开通用附着版卷轴窗口。每次点「运行」都会先卸载、再重新加载插件和窗口模块，"
                    "改完脚本不用重启 Maya，也能稳定重新打开。",
     "author": "詹康明",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "node": "scrollMarketNode",
     "node_id": "0x00151502",
     "run": "cmds.openScrollMarket()",
@@ -52,6 +52,11 @@ PLUGIN_ROOT = os.path.abspath(os.path.join(PLUGIN_DIR, "..", "..", "..", "..", "
 def _ensure_paths():
     if SCROLL_DIR not in sys.path:
         sys.path.insert(0, SCROLL_DIR)
+    # 自带依赖库：节点被单独拷走时也能跑，不依赖项目根的版本库
+    lib_dir = os.path.join(SCROLL_DIR, "_lib")
+    if os.path.isdir(lib_dir) and lib_dir not in sys.path:
+        sys.path.insert(0, lib_dir)
+    # 回退：完整项目里仍可用 <项目根>/<maya版本> 下的共享库
     version = int(cmds.about(version=True))
     for offset in range(30):
         library = os.path.join(PLUGIN_ROOT, str(version - offset))
