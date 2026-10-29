@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.0"
+TOOL_VERSION = "3.0.1"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -629,7 +629,7 @@ def open_url(url):
 class PluginCard(QtWidgets.QFrame):
     def __init__(self, plugin, parent, on_primary, on_detail, on_menu,
                  on_favorite=None, is_favorite=False):
-        super(PluginCard, self).__init__(parent)
+        super().__init__(parent)
         self.plugin = plugin
         self._on_primary = on_primary
         self._on_detail = on_detail
@@ -730,7 +730,7 @@ class PluginCard(QtWidgets.QFrame):
 
     def mouseDoubleClickEvent(self, event):
         self._on_detail(self.plugin)
-        super(PluginCard, self).mouseDoubleClickEvent(event)
+        super().mouseDoubleClickEvent(event)
 
     def _primary_clicked(self):
         self._on_primary(self.plugin)
@@ -821,7 +821,7 @@ class StarsWorker(QtCore.QObject):
     done = QtCore.Signal(object)
 
     def __init__(self, repos):
-        super(StarsWorker, self).__init__()
+        super().__init__()
         self.repos = list(repos)
 
     def run(self):
@@ -850,7 +850,7 @@ class MarketUpdateWorker(QtCore.QObject):
     done = QtCore.Signal(bool, object, str)
 
     def __init__(self, task, cancel_event):
-        super(MarketUpdateWorker, self).__init__()
+        super().__init__()
         self._task = task
         self._cancel = cancel_event
 
@@ -873,7 +873,7 @@ class MarketUpdateWorker(QtCore.QObject):
 class OnlineCard(QtWidgets.QFrame):
     def __init__(self, entry, installed, parent, on_install, on_detail,
                  on_favorite, is_favorite=False):
-        super(OnlineCard, self).__init__(parent)
+        super().__init__(parent)
         self.entry = entry
         self.plugin = entry
         self._installed = installed
@@ -986,7 +986,7 @@ class OnlineCard(QtWidgets.QFrame):
 
     def mouseDoubleClickEvent(self, event):
         self._on_detail(self.entry)
-        super(OnlineCard, self).mouseDoubleClickEvent(event)
+        super().mouseDoubleClickEvent(event)
 
     def _favorite_clicked(self):
         if self._on_favorite is not None:
@@ -1086,7 +1086,7 @@ class OnlineCard(QtWidgets.QFrame):
 # ---------------------------------------------------------------------------
 class DetailDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent, on_primary):
-        super(DetailDialog, self).__init__(parent)
+        super().__init__(parent)
         self.plugin = plugin
         self.setObjectName("detailDialog")
         self.setWindowTitle(plugin.title)
@@ -1174,7 +1174,7 @@ class DetailDialog(QtWidgets.QDialog):
 
 class OnlineDetailDialog(QtWidgets.QDialog):
     def __init__(self, entry, installed, parent, on_primary):
-        super(OnlineDetailDialog, self).__init__(parent)
+        super().__init__(parent)
         self.entry = entry
         self.setObjectName("detailDialog")
         self.setWindowTitle(entry.title)
@@ -1285,7 +1285,7 @@ class TaskProgressDialog(QtWidgets.QDialog):
     """安装 / 更新的二级进度页：阶段说明 + 进度条 + 详情 + 取消。"""
 
     def __init__(self, title, task, parent=None):
-        super(TaskProgressDialog, self).__init__(parent)
+        super().__init__(parent)
         self.setObjectName("taskDialog")
         self.setWindowTitle(title)
         self.setWindowModality(Qt.WindowModal)
@@ -1380,7 +1380,7 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
     """打开文件后提示：这个场景缺少哪些节点插件，可以一键安装。"""
 
     def __init__(self, scene_path, entries, local_plugins, unmatched, parent=None):
-        super(SceneRequirementsDialog, self).__init__(parent)
+        super().__init__(parent)
         self.setObjectName("detailDialog")
         self.setWindowTitle("当前文件缺少节点插件")
         self.setMinimumWidth(560)
@@ -1462,7 +1462,7 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
 
     def accept(self):
         self.wants_load_local = bool(self.local_box and self.local_box.isChecked())
-        super(SceneRequirementsDialog, self).accept()
+        super().accept()
 
 
 # ---------------------------------------------------------------------------
@@ -1470,7 +1470,7 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
 # ---------------------------------------------------------------------------
 class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def __init__(self):
-        super(MarketWindow, self).__init__()
+        super().__init__()
         self.setObjectName("zkmNodeMarketWindow")
         self.setWindowTitle("节点插件市场")
         if os.path.isfile(ICON_PATH):
@@ -1759,11 +1759,11 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         # FramelessWindowHint 整个清掉，且 setWindowFlags 会顺带隐藏窗口。
         # 这里在调用完父类逻辑后立即把无边框标志加回来，保证第一次 setVisible(True)
         # 时窗口就是无边框的，避免走 showEvent 里改标志→隐藏→再显示的不可靠路径。
-        super(MarketWindow, self)._makeMayaStandaloneWindow()
+        super()._makeMayaStandaloneWindow()
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
 
     def showEvent(self, event):
-        super(MarketWindow, self).showEvent(event)
+        super().showEvent(event)
         # 兜底：万一无边框标志被别处重置，补回来并重新显示一次。
         if not (self.windowFlags() & Qt.FramelessWindowHint):
             self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
@@ -1837,7 +1837,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
                 event.accept()
                 return
-        super(MarketWindow, self).mousePressEvent(event)
+        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self._resize_mode and event.buttons() & Qt.LeftButton:
@@ -1851,7 +1851,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         # 无按钮按下时，根据所在边缘更新光标
         if not (event.buttons() & Qt.LeftButton):
             self._apply_cursor(event.pos())
-        super(MarketWindow, self).mouseMoveEvent(event)
+        super().mouseMoveEvent(event)
 
     def _do_resize(self, global_pos):
         mode = self._resize_mode
@@ -1883,13 +1883,13 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._resize_mode = None
         self._resize_start_geom = None
         self._resize_start_pos = None
-        super(MarketWindow, self).mouseReleaseEvent(event)
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self._in_header(event.pos()):
             self._toggle_maximize()
             return
-        super(MarketWindow, self).mouseDoubleClickEvent(event)
+        super().mouseDoubleClickEvent(event)
 
     def _toggle_maximize(self):
         if self.isMaximized():
@@ -1907,7 +1907,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.max_button.setToolTip("最大化")
 
     def changeEvent(self, event):
-        super(MarketWindow, self).changeEvent(event)
+        super().changeEvent(event)
         if event.type() == QtCore.QEvent.WindowStateChange:
             self._update_max_button()
 
@@ -3693,11 +3693,11 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         self.unregister_scene_hook()
-        super(MarketWindow, self).closeEvent(event)
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     def resizeEvent(self, event):
-        super(MarketWindow, self).resizeEvent(event)
+        super().resizeEvent(event)
         if hasattr(self, "discover_scroll"):
             # 直接重算列数，保证拖拽缩放时卡片实时重排；
             # 再用 singleShot(0) 兜底一次，处理布局尚未稳定的情况。
@@ -3725,7 +3725,7 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
     """环境检查对话框：无边框、深色风格与 MarketWindow 保持一致。"""
 
     def __init__(self, missing, parent=None):
-        super(EnvironmentCheckDialog, self).__init__(parent)
+        super().__init__(parent)
         self.setObjectName("envDialog")
         self.setWindowTitle(u"节点插件市场 — 环境检查")
         self.setMinimumWidth(560)
@@ -3758,18 +3758,18 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
             self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
         else:
-            super(EnvironmentCheckDialog, self).mousePressEvent(event)
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self._dragging and event.buttons() & Qt.LeftButton:
             self.move(event.globalPos() - self._drag_pos)
             event.accept()
         else:
-            super(EnvironmentCheckDialog, self).mouseMoveEvent(event)
+            super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         self._dragging = False
-        super(EnvironmentCheckDialog, self).mouseReleaseEvent(event)
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # 双击标题栏也允许触发（与主窗口一致）
@@ -3780,7 +3780,7 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
                 self.showMaximized()
             event.accept()
         else:
-            super(EnvironmentCheckDialog, self).mouseDoubleClickEvent(event)
+            super().mouseDoubleClickEvent(event)
 
     # ------------------------------------------------------------------
     # 界面
@@ -3881,7 +3881,7 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
 
     def resizeEvent(self, event):
         # 让标题栏几何随窗口尺寸更新（拖动 hit-test 需要）
-        super(EnvironmentCheckDialog, self).resizeEvent(event)
+        super().resizeEvent(event)
         if hasattr(self, "_header_geom"):
             self._header_geom = QtCore.QRect(0, 0, self.width(), 44)
 
@@ -4002,15 +4002,15 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
 
     def accept(self):
         self._wait_for_installs()
-        super(EnvironmentCheckDialog, self).accept()
+        super().accept()
 
     def reject(self):
         self._wait_for_installs()
-        super(EnvironmentCheckDialog, self).reject()
+        super().reject()
 
     def closeEvent(self, event):
         self._wait_for_installs()
-        super(EnvironmentCheckDialog, self).closeEvent(event)
+        super().closeEvent(event)
 
     def _refresh_continue_state(self):
         has_required = any(d["required"] for d in self._missing)
