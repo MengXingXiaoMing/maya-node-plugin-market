@@ -2099,6 +2099,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.No)
         if reply != QtWidgets.QMessageBox.Yes:
             return
+        if node_market.plugin_loaded(plugin.path):
+            node_market.unload_plugin_file(plugin.path)
         try:
             backup = online_market.backup_plugin_folder(plugin.folder, plugin.node_id_text)
         except Exception as exc:
