@@ -26,6 +26,11 @@ except ImportError:  # Python 2
 
 import node_market
 
+try:
+    from urllib.parse import quote
+except ImportError:
+    from urllib import quote
+
 INDEX_OWNER = "MengXingXiaoMing"
 INDEX_REPO = "maya-node-plugin-index"
 INDEX_BRANCH = "main"
@@ -542,3 +547,71 @@ def install_entry(entry, nodes_dir, report=None):
         return target
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 投稿到在线目录（无需 Token）
+# ---------------------------------------------------------------------------
+MAYA_VERSIONS_DEFAULT = ["2022", "2023", "2024", "2025", "2026"]
+
+
+def read_install_manifest(plugin):
+    """读取节点目录里的 .market.json（市场安装时写入的来源信息）。"""
+    folder = getattr(plugin, "folder", "") or os.path.dirname(
+        getattr(plugin, "path", "") or "")
+    if not folder:
+        return {}
+    path = os.path.join(folder, ".market.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with io.open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def build_submission_entry(plugin, repo="", subpath=None, entry_file=None):
+    """把一个本地节点插件整理成 plugins/<node_id>.json 的条目。
+
+    repo/subpath/entry_file 为空时，尝试从 .market.json 继承（市场装的插件）。
+    """
+    manifest = read_install_manifest(plugin)
+    today = time.strftime("%Y-%m-%d")
+    subpath = node_market.to_text(subpath) if subpath is not None else node_market.to_text(
+        manifest.get("subpath"))
+    entry_file = node_market.to_text(entry_file) if entry_file is not None else node_market.to_text(
+        manifest.get("entry"))
+    if not entry_file:
+        entry_file = os.path.basename(getattr(plugin, "path", "") or "")
+    return {
+        "name": plugin.title or "",
+        "description": plugin.description or "",
+        "author": plugin.author or "",
+        "version": plugin.version or "1.0.0",
+        "node_id": plugin.node_id_text,
+        "node_name": plugin.node_name or "",
+        "category": plugin.category or "utility",
+        "tags": [tag for tag in (plugin.tags or []) if tag],
+        "repo": node_market.to_text(repo) or node_market.to_text(manifest.get("source")),
+        "subpath": subpath,
+        "entry": entry_file,
+        "branch": "main",
+        "maya_versions": list(MAYA_VERSIONS_DEFAULT),
+        "added": today,
+        "updated": today,
+    }
+
+
+def submission_url(entry):
+    """GitHub 网页「新建文件」地址：预填好条目内容，登录状态下点两次即成 PR。
+
+    不需要任何 Token —— Token 只有 git push / API 才需要。
+    """
+    name = "%s.json" % entry.get("node_id")
+    payload = json.dumps(entry, ensure_ascii=False, indent=2)
+    return "https://github.com/%s/%s/new/%s?filename=%s&value=%s" % (
+        INDEX_OWNER, INDEX_REPO, INDEX_BRANCH,
+        quote("plugins/" + name, safe=""), quote(payload, safe=""))
+
