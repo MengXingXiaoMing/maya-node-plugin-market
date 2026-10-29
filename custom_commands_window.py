@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.0.1"
+TOOL_VERSION = "3.1.0"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -92,6 +92,138 @@ CACHE_PATH = os.path.join(FILE_DIR, "market_cache.json")
 CATALOG_CACHE_PATH = os.path.join(FILE_DIR, "market_catalog_cache.json")
 ICON_PATH = os.path.join(FILE_DIR, "custom_commands_lcon.png")
 DEFAULT_NODES_DIR = os.path.join(FILE_DIR, "nodes")
+
+# 自动加载（随 Maya 启动加载勾选的节点插件）。
+# 注意：Maya 启动时没有登录上下文，所以清单存共享文件、并记录插件绝对路径，
+# 启动时按路径直接加载，不依赖按用户的设置，也不需要重新扫描目录。
+AUTOLOAD_PATH = os.path.join(FILE_DIR, "market_autoload.json")
+AUTOLOAD_BEGIN = "# >>> zkm-node-market-autoload >>>"
+AUTOLOAD_END = "# <<< zkm-node-market-autoload <<<"
+
+
+def load_autoload_entries():
+    try:
+        with open(AUTOLOAD_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [e for e in data if isinstance(e, dict) and e.get("path")]
+    except Exception:
+        return []
+
+
+def save_autoload_entries(entries):
+    try:
+        with open(AUTOLOAD_PATH, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def is_autoload(node_id_text):
+    key = str(node_id_text or "").strip().lower()
+    return any(str(e.get("node_id", "")).strip().lower() == key
+               for e in load_autoload_entries())
+
+
+def set_autoload(plugin, enabled):
+    key = str(plugin.node_id_text or "").strip().lower()
+    entries = [e for e in load_autoload_entries()
+               if str(e.get("node_id", "")).strip().lower() != key]
+    if enabled:
+        entries.append({
+            "node_id": plugin.node_id_text,
+            "path": os.path.abspath(plugin.path),
+            "name": plugin.title,
+        })
+    save_autoload_entries(entries)
+    sync_autoload_startup()
+
+
+def _usersetup_path():
+    return os.path.join(cmds.internalVar(userScriptDir=True), "userSetup.py")
+
+
+def _autoload_block():
+    # 生成写进 userSetup.py 的启动代码：读取清单，逐个加载还没加载的插件。
+    return (
+        AUTOLOAD_BEGIN + "\n"
+        "def _zkm_node_market_autoload():\n"
+        "    try:\n"
+        "        import os, sys, json\n"
+        "        _d = %r\n"
+        "        if _d not in sys.path:\n"
+        "            sys.path.insert(0, _d)\n"
+        "        import maya.utils as _mu\n"
+        "        def _do():\n"
+        "            try:\n"
+        "                import node_market as _nm\n"
+        "                _f = os.path.join(_d, 'market_autoload.json')\n"
+        "                if not os.path.isfile(_f):\n"
+        "                    return\n"
+        "                for _e in json.load(open(_f)):\n"
+        "                    _p = _e.get('path')\n"
+        "                    if _p and os.path.isfile(_p) and not _nm.plugin_loaded(_p):\n"
+        "                        _nm.load_plugin_file(_p)\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "        _mu.executeDeferred(_do)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "_zkm_node_market_autoload()\n"
+        + AUTOLOAD_END + "\n"
+    ) % FILE_DIR
+
+
+def _strip_autoload_block(text):
+    out, skip = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s == AUTOLOAD_BEGIN:
+            skip = True
+            continue
+        if s == AUTOLOAD_END:
+            skip = False
+            continue
+        if not skip:
+            out.append(line)
+    return "\n".join(out).strip("\n")
+
+
+def sync_autoload_startup():
+    """按当前清单，把启动块写进 userSetup.py（有勾选）或移除（没勾选）。
+
+    只动带标记的那一段，用户自己在 userSetup.py 里的其它内容原样保留。
+    """
+    try:
+        path = _usersetup_path()
+    except Exception:
+        return
+    existing = ""
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        except Exception:
+            existing = ""
+    existing = _strip_autoload_block(existing)
+    entries = load_autoload_entries()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if entries:
+            new = existing
+            if new and not new.endswith("\n"):
+                new += "\n"
+            new += "\n" + _autoload_block()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new)
+        else:
+            if existing.strip():
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(existing + "\n")
+            elif os.path.isfile(path):
+                os.remove(path)
+    except Exception as exc:
+        cmds.warning("同步自动加载启动项失败：%s" % exc)
+
 
 # ---------------------------------------------------------------------------
 # 启动环境检查
@@ -340,6 +472,25 @@ QComboBox#sortBox QAbstractItemView {
     background: #22252b; color: #dfe3ea; border: 1px solid #3a3e48;
     selection-background-color: #3b6fd4;
 }
+QMenu {
+    background: #22252b; color: #dfe3ea;
+    border: 1px solid #3a3e48; border-radius: 8px;
+    padding: 5px; font-size: 12px;
+}
+QMenu::item {
+    background: transparent; color: #dfe3ea;
+    padding: 6px 24px; border-radius: 5px; margin: 1px 3px;
+}
+QMenu::item:selected {
+    background: rgba(91, 157, 255, 0.18); color: #eaf1ff;
+}
+QMenu::item:disabled { color: #5a616d; }
+QMenu::separator { height: 1px; background: #34373f; margin: 5px 10px; }
+QMenu::indicator {
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid #3a3e48; background: #1b1d22;
+}
+QMenu::indicator:checked { background: #4a86e8; border-color: #4a86e8; }
 QLineEdit#pathEdit {
     background: #1b1d22; border: 1px solid #3a3d46; border-radius: 8px;
     padding: 6px 10px; color: #dfe3ea; font-size: 12px;
@@ -626,6 +777,77 @@ def open_url(url):
 # ---------------------------------------------------------------------------
 # 插件卡片
 # ---------------------------------------------------------------------------
+class AnimatedSwitch(QtWidgets.QWidget):
+    """滑动开关：点击切换，滑块位置/轨道颜色用属性动画平滑过渡。"""
+
+    toggled = QtCore.Signal(bool)
+
+    def __init__(self, parent=None, checked=False):
+        super().__init__(parent)
+        self._checked = bool(checked)
+        self._offset = 1.0 if self._checked else 0.0
+        self.setFixedSize(38, 20)
+        self.setCursor(Qt.PointingHandCursor)
+        self._anim = QtCore.QPropertyAnimation(self, b"offset", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+
+    def get_offset(self):
+        return self._offset
+
+    def set_offset(self, value):
+        self._offset = value
+        self.update()
+
+    offset = QtCore.Property(float, get_offset, set_offset)
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, checked, animate=True):
+        checked = bool(checked)
+        if checked == self._checked:
+            return
+        self._checked = checked
+        self._anim.stop()
+        self._anim.setStartValue(self._offset)
+        self._anim.setEndValue(1.0 if checked else 0.0)
+        if animate:
+            self._anim.start()
+        else:
+            self._offset = 1.0 if checked else 0.0
+            self.update()
+        self.toggled.emit(self._checked)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setChecked(not self._checked)
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+        radius = (h - 2) / 2.0
+        off = self._offset
+        # 轨道颜色随滑块位置在灰/蓝之间渐变
+        c_off, c_on = QtGui.QColor("#3a3e48"), QtGui.QColor("#4a86e8")
+        track = QtGui.QColor(
+            int(c_off.red() + (c_on.red() - c_off.red()) * off),
+            int(c_off.green() + (c_on.green() - c_off.green()) * off),
+            int(c_off.blue() + (c_on.blue() - c_off.blue()) * off))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(track)
+        painter.drawRoundedRect(QtCore.QRectF(0, 1, w, h - 2), radius, radius)
+        # 滑块
+        margin = 3.0
+        d = h - 2 - 2 * margin
+        x = margin + off * (w - 2 * margin - d)
+        painter.setBrush(QtGui.QColor("#f2f4f8"))
+        painter.drawEllipse(QtCore.QRectF(x, 1 + margin, d, d))
+        painter.end()
+
+
 class PluginCard(QtWidgets.QFrame):
     def __init__(self, plugin, parent, on_primary, on_detail, on_menu,
                  on_favorite=None, is_favorite=False):
@@ -640,7 +862,7 @@ class PluginCard(QtWidgets.QFrame):
 
         self.setObjectName("pluginCard")
         self.setFixedWidth(CARD_WIDTH)
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(216)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
@@ -689,6 +911,24 @@ class PluginCard(QtWidgets.QFrame):
         self.desc_label.setFixedHeight(38)
         self.desc_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         layout.addWidget(self.desc_label)
+
+        autoload_row = QtWidgets.QHBoxLayout()
+        autoload_row.setSpacing(7)
+        autoload_tip = "勾选后，下次启动 Maya 会自动加载这个节点插件，\n打开用到它的场景时节点不会再变成 unknown。"
+        self.autoload_switch = AnimatedSwitch(self, checked=is_autoload(plugin.node_id_text))
+        self.autoload_switch.setToolTip(autoload_tip)
+        autoload_label = QtWidgets.QLabel("开机自动加载")
+        autoload_label.setObjectName("cardMeta")
+        autoload_label.setCursor(Qt.PointingHandCursor)
+        autoload_label.setToolTip(autoload_tip)
+        autoload_label.mouseReleaseEvent = (
+            lambda e: self.autoload_switch.setChecked(not self.autoload_switch.isChecked()))
+        self.autoload_switch.toggled.connect(
+            lambda checked: self._on_menu("autoload", self.plugin, checked))
+        autoload_row.addWidget(self.autoload_switch)
+        autoload_row.addWidget(autoload_label)
+        autoload_row.addStretch(1)
+        layout.addLayout(autoload_row)
 
         footer = QtWidgets.QHBoxLayout()
         footer.setSpacing(6)
@@ -1404,6 +1644,23 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        # 1) 优先：本地已下载、只差加载 —— 最快路径，提示一键开启
+        if self._local_plugins:
+            sec = QtWidgets.QLabel("本地已下载，勾选后一键加载（不用重新安装）：")
+            sec.setObjectName("fieldLabel")
+            layout.addWidget(sec)
+            names = "、".join(plugin.title for plugin in self._local_plugins)
+            self.local_box = QtWidgets.QCheckBox(node_market.shorten(names, 40))
+            self.local_box.setObjectName("filterCheck")
+            self.local_box.setChecked(True)
+            self.local_box.setToolTip(
+                "这些插件已经下载到本地，只是没有加载。\n勾选后点下面按钮即可一键加载。")
+            self.local_box.toggled.connect(self._refresh_action)
+            layout.addWidget(self.local_box)
+        else:
+            self.local_box = None
+
+        # 2) 其次：需要在线安装的
         if entries:
             label = QtWidgets.QLabel("在线目录里可以安装：")
             label.setObjectName("fieldLabel")
@@ -1416,26 +1673,13 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
                 box.setChecked(True)
                 box.setToolTip("%s\n节点：%s · %s" % (
                     entry.description or "", entry.node_name, entry.node_id_text))
+                box.toggled.connect(self._refresh_action)
                 layout.addWidget(box)
                 self.checkboxes.append((box, entry))
-        else:
-            label = QtWidgets.QLabel("在线目录里没有找到对应的插件。")
-            label.setObjectName("fieldLabel")
-            layout.addWidget(label)
-
-        if self._local_plugins:
-            names = "、".join(plugin.title for plugin in self._local_plugins)
-            self.local_box = QtWidgets.QCheckBox(
-                "本地已安装但未加载：%s" % node_market.shorten(names, 34))
-            self.local_box.setObjectName("filterCheck")
-            self.local_box.setChecked(True)
-            layout.addWidget(self.local_box)
-        else:
-            self.local_box = None
 
         if unmatched:
             warn = QtWidgets.QLabel(
-                "目录里也没有这些插件：%s\n请联系文件作者获取插件后再打开。" % (
+                "以下插件本地和在线目录都没找到：%s\n请联系文件作者获取插件后再打开。" % (
                     "、".join(unmatched[:8])))
             warn.setObjectName("hint")
             warn.setWordWrap(True)
@@ -1448,14 +1692,31 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
         later.clicked.connect(self.reject)
         buttons.addWidget(later)
         buttons.addStretch(1)
-        action = QtWidgets.QPushButton("安装所选并重开文件")
-        action.setObjectName("primaryButton")
-        action.setEnabled(bool(entries) or bool(self._local_plugins))
-        action.clicked.connect(self.accept)
-        buttons.addWidget(action)
+        self.action_button = QtWidgets.QPushButton("")
+        self.action_button.setObjectName("primaryButton")
+        self.action_button.clicked.connect(self.accept)
+        buttons.addWidget(self.action_button)
         layout.addLayout(buttons)
 
         self.setStyleSheet(QSS)
+        self._refresh_action()
+
+    def _refresh_action(self):
+        """根据勾选情况动态决定主按钮文案和可用状态。"""
+        if not hasattr(self, "action_button"):
+            return
+        to_install = bool(self.selected_entries())
+        to_load = bool(self.local_box and self.local_box.isChecked())
+        if to_install and to_load:
+            text = "安装并加载，重开文件"
+        elif to_install:
+            text = "安装并重开文件"
+        elif to_load:
+            text = "一键加载并重开文件"
+        else:
+            text = "重开文件"
+        self.action_button.setText(text)
+        self.action_button.setEnabled(to_install or to_load)
 
     def selected_entries(self):
         return [entry for box, entry in self.checkboxes if box.isChecked()]
@@ -1552,6 +1813,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.switch_tab(0)
         QtCore.QTimer.singleShot(0, self.fetch_online_catalog)
         QtCore.QTimer.singleShot(400, self.check_market_version)
+        self._initial_scene_checked = False
         self.register_scene_hook()
 
     # ------------------------------------------------------------------
@@ -2851,6 +3113,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "删除失败", str(exc))
             return
+        # 同步从开机自动加载清单里移除
+        set_autoload(plugin, False)
         self.refresh()
         self.notify("%s：已移除（备份在 %s）" % (plugin.title, backup), True)
 
@@ -3233,13 +3497,33 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         dialog = DetailDialog(plugin, self, self.run_plugin)
         exec_dialog(dialog)
 
-    def card_menu_action(self, action, plugin=None):
+    def card_menu_action(self, action, plugin=None, checked=None):
         if action == "refresh":
             self.refresh()
         elif action == "unload" and plugin is not None:
             self.unload_plugin(plugin)
         elif action == "delete" and plugin is not None:
             self.delete_plugin(plugin)
+        elif action == "autoload" and plugin is not None:
+            self.toggle_autoload(plugin, bool(checked))
+
+    def toggle_autoload(self, plugin, enabled):
+        set_autoload(plugin, enabled)
+        if enabled:
+            tip = "已加入开机自动加载，下次启动 Maya 会自动加载"
+            if not node_market.plugin_loaded(plugin.path):
+                ok, message = node_market.load_plugin_file(plugin.path)
+                if ok:
+                    tip = "已加载，并加入开机自动加载"
+                else:
+                    tip = "已加入开机自动加载（当前加载失败：%s）" % message
+            self.notify("%s：%s" % (plugin.title, tip), True)
+        else:
+            self.notify("%s：已取消开机自动加载" % plugin.title, True)
+        for card in list(self.cards) + list(self.favorite_cards):
+            card.refresh_state()
+        self.build_loaded()
+        self.update_status()
 
     # ------------------------------------------------------------------
     # 在线目录
@@ -3286,6 +3570,14 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 self.notify("在线目录刷新失败，继续使用本地缓存", False)
             else:
                 self.notify("在线目录加载失败", False)
+
+        # 市场打开时若已有场景加载，目录就绪后补做一次缺失节点检测；
+        # 否则检测只在「下一次打开文件」的 kAfterOpen 回调里才触发，
+        # 先开文件、后开市场的情况会漏检。只触发一次。
+        if not self._initial_scene_checked:
+            self._initial_scene_checked = True
+            QtCore.QTimer.singleShot(
+                300, lambda: self.check_scene_requirements(auto=True))
 
     def _local_plugin_for(self, entry):
         for plugin in self.plugins:
@@ -3666,7 +3958,27 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if failed:
             cmds.warning("场景插件安装失败：\n" + "\n".join(failed))
             self.notify("有 %d 个插件安装失败" % len(failed), False)
+        # 关键：装完立刻加载。否则重开文件时插件仍未加载，节点依旧 unknown。
+        self._load_scene_plugins(entries)
         self.ask_reopen_scene()
+
+    def _load_scene_plugins(self, entries):
+        """把刚装好（或本地已有）的所需插件加载进 Maya，返回成功加载的数量。"""
+        wanted = set(str(e.node_id_text).lower()
+                     for e in entries if getattr(e, "node_id_text", ""))
+        loaded = 0
+        for plugin in self.plugins:
+            if str(plugin.node_id_text).lower() not in wanted:
+                continue
+            if node_market.plugin_loaded(plugin.path):
+                continue
+            try:
+                ok, _msg = node_market.load_plugin_file(plugin.path)
+                if ok:
+                    loaded += 1
+            except Exception:
+                continue
+        return loaded
 
     def ask_reopen_scene(self):
         reply = QtWidgets.QMessageBox.question(
