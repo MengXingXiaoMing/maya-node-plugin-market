@@ -2260,7 +2260,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             if self.online_error:
                 text += "（离线缓存）"
         elif self.online_error:
-            text = "在线目录未加载"
+            first_line = str(self.online_error).strip().splitlines()[0]
+            text = "在线目录加载失败：%s" % node_market.shorten(first_line, 60)
         else:
             text = "在线目录为空"
         self.online_summary.setText(text)
