@@ -39,18 +39,35 @@ class Cancelled(Exception):
 
 
 def catalog_urls():
-    """jsDelivr 优先（国内可用），raw GitHub 作为备用。"""
+    """GitHub API 最实时；jsDelivr 对 @main 有 12 小时缓存，作为备用。"""
     stamp = int(time.time())
     return [
-        "https://cdn.jsdelivr.net/gh/%s/%s@%s/catalog.json?t=%d" % (
-            INDEX_OWNER, INDEX_REPO, INDEX_BRANCH, stamp),
-        "https://raw.githubusercontent.com/%s/%s/%s/catalog.json?t=%d" % (
-            INDEX_OWNER, INDEX_REPO, INDEX_BRANCH, stamp),
+        {
+            "url": "https://api.github.com/repos/%s/%s/contents/catalog.json?ref=%s" % (
+                INDEX_OWNER, INDEX_REPO, INDEX_BRANCH),
+            "headers": {"Accept": "application/vnd.github.raw"},
+            "label": "GitHub API",
+        },
+        {
+            "url": "https://cdn.jsdelivr.net/gh/%s/%s@%s/catalog.json?t=%d" % (
+                INDEX_OWNER, INDEX_REPO, INDEX_BRANCH, stamp),
+            "headers": {},
+            "label": "jsDelivr",
+        },
+        {
+            "url": "https://raw.githubusercontent.com/%s/%s/%s/catalog.json?t=%d" % (
+                INDEX_OWNER, INDEX_REPO, INDEX_BRANCH, stamp),
+            "headers": {},
+            "label": "GitHub Raw",
+        },
     ]
 
 
-def _read_url(url, timeout):
-    request = UrlRequest(url, headers={"User-Agent": USER_AGENT})
+def _read_url(url, timeout, headers=None):
+    merged = {"User-Agent": USER_AGENT}
+    if headers:
+        merged.update(headers)
+    request = UrlRequest(url, headers=merged)
     response = urlopen(request, timeout=timeout)
     try:
         return response.read()
@@ -60,17 +77,18 @@ def _read_url(url, timeout):
 
 def fetch_catalog(timeout=15):
     errors = []
-    for url in catalog_urls():
+    for source in catalog_urls():
         try:
-            raw = _read_url(url, timeout)
+            raw = _read_url(source["url"], timeout, source.get("headers"))
             data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict) or not isinstance(data.get("plugins"), list):
                 raise ValueError("目录缺少 plugins 列表")
-            data["_source_url"] = url
+            data["_source_url"] = source["url"]
+            data["_source_label"] = source.get("label") or "在线目录"
             data["_fetched_at"] = time.time()
             return data
         except Exception as exc:
-            errors.append("%s\n  %s" % (url, exc))
+            errors.append("%s\n  %s" % (source["url"], exc))
     raise IOError("无法获取在线目录：\n" + "\n".join(errors))
 
 
@@ -253,15 +271,27 @@ MARKET_REPO = "maya-node-plugin-market"
 def fetch_remote_version(timeout=10):
     """读取市场仓库的 version.json，用来提示客户端有新版本。"""
     stamp = int(time.time())
-    urls = [
-        "https://cdn.jsdelivr.net/gh/%s/%s@main/version.json?t=%d" % (
-            INDEX_OWNER, MARKET_REPO, stamp),
-        "https://raw.githubusercontent.com/%s/%s/main/version.json" % (
-            INDEX_OWNER, MARKET_REPO),
+    sources = [
+        {
+            "url": "https://api.github.com/repos/%s/%s/contents/version.json?ref=main" % (
+                INDEX_OWNER, MARKET_REPO),
+            "headers": {"Accept": "application/vnd.github.raw"},
+        },
+        {
+            "url": "https://cdn.jsdelivr.net/gh/%s/%s@main/version.json?t=%d" % (
+                INDEX_OWNER, MARKET_REPO, stamp),
+            "headers": {},
+        },
+        {
+            "url": "https://raw.githubusercontent.com/%s/%s/main/version.json" % (
+                INDEX_OWNER, MARKET_REPO),
+            "headers": {},
+        },
     ]
-    for url in urls:
+    for source in sources:
         try:
-            data = json.loads(_read_url(url, timeout).decode("utf-8"))
+            data = json.loads(_read_url(
+                source["url"], timeout, source.get("headers")).decode("utf-8"))
             version = node_market.to_text((data or {}).get("version"))
             if version:
                 return version
