@@ -30,7 +30,7 @@ INDEX_REPO = "maya-node-plugin-index"
 INDEX_BRANCH = "main"
 INDEX_URL = "https://github.com/%s/%s" % (INDEX_OWNER, INDEX_REPO)
 CACHE_VERSION = 1
-USER_AGENT = "MayaNodeMarket/2.4"
+USER_AGENT = "MayaNodeMarket/2.5"
 
 
 class Cancelled(Exception):
@@ -145,6 +145,8 @@ class CatalogEntry(object):
             "https://github.com/%s" % self.repo if self.repo else "")
         self.maya_versions = [node_market.to_text(v) for v in (self.raw.get("maya_versions") or [])]
         self.added = node_market.to_text(self.raw.get("added"))
+        self.updated = node_market.to_text(
+            self.raw.get("updated") or self.raw.get("modified") or self.raw.get("added"))
         self.path = ""
         self.commands = []
 
@@ -178,12 +180,57 @@ def entries_from_catalog(catalog):
 
 
 def version_tuple(value):
-    parts = re.findall(r"\d+", str(value or ""))
-    return tuple(int(part) for part in parts[:4]) or (0,)
+    """1.0 和 1.0.0 视为同一个版本，避免位数不同导致误判可更新。"""
+    parts = [int(part) for part in re.findall(r"\d+", str(value or ""))[:4]]
+    parts += [0] * (4 - len(parts))
+    return tuple(parts)
 
 
 def is_newer(new_version, old_version):
     return version_tuple(new_version) > version_tuple(old_version)
+
+
+def maya_major(version_text):
+    match = re.search(r"20\d{2}", str(version_text or ""))
+    return match.group(0) if match else ""
+
+
+def supports_maya(entry, version_text):
+    """条目没写 maya_versions 时视为不限制版本。"""
+    wanted = maya_major(version_text)
+    if not entry.maya_versions or not wanted:
+        return True
+    return any(wanted == maya_major(item) for item in entry.maya_versions)
+
+
+BACKUP_KEEP = 5
+
+
+def _prune_backups(backup_root, node_id_text, keep=BACKUP_KEEP):
+    try:
+        names = sorted(
+            (name for name in os.listdir(backup_root)
+             if name.startswith(node_id_text + "-")), reverse=True)
+    except OSError:
+        return
+    for name in names[keep:]:
+        shutil.rmtree(os.path.join(backup_root, name), ignore_errors=True)
+
+
+def backup_plugin_folder(target, node_id_text):
+    """把旧版本挪到 nodes/.backup/<序号>-<时间>，保留最近几份方便回退。"""
+    backup_root = os.path.join(os.path.dirname(target), ".backup")
+    if not os.path.isdir(backup_root):
+        os.makedirs(backup_root)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(backup_root, "%s-%s" % (node_id_text, stamp))
+    index = 1
+    while os.path.exists(path):
+        index += 1
+        path = os.path.join(backup_root, "%s-%s-%d" % (node_id_text, stamp, index))
+    shutil.move(target, path)
+    _prune_backups(backup_root, node_id_text)
+    return path
 
 
 def human_bytes(value):
@@ -380,10 +427,10 @@ def install_entry(entry, nodes_dir, report=None):
         validate_package(source_dir, entry)
 
         target = os.path.join(nodes_dir, entry.node_id_text)
-        backup = os.path.join(temp_dir, "backup")
+        backup_path = ""
         if os.path.isdir(target):
-            _report(report, "backup", "正在备份本地旧版本...", 82, target)
-            shutil.move(target, backup)
+            backup_path = backup_plugin_folder(target, entry.node_id_text)
+            _report(report, "backup", "正在备份本地旧版本...", 82, backup_path)
         else:
             _report(report, "backup", "本地没有旧版本，跳过备份", 82, target)
 
@@ -395,8 +442,8 @@ def install_entry(entry, nodes_dir, report=None):
             validate_package(target, entry)
         except Exception:
             shutil.rmtree(target, ignore_errors=True)
-            if os.path.isdir(backup):
-                shutil.move(backup, target)
+            if backup_path and os.path.isdir(backup_path):
+                shutil.move(backup_path, target)
             raise
         _report(report, "done", "安装完成", 100, target)
         return target
