@@ -5,17 +5,21 @@ Maya 打开场景时，如果注册节点的插件不存在，会把节点降级
 并把插件名记录在 cmds.unknownPlugin 里。这里把插件名映射到在线目录条目，
 交给市场提示并一键安装。
 
-约定：不写启动项、不往场景里塞数据；只在市场窗口打开的这一会话里注册回调。
+约定：不写启动项；只在市场窗口打开的这一会话里注册回调。
+保存时把用到的节点插件写进场景 fileInfo（跟文件一起走），
+打开时先读清单、再结合 Maya 的 unknownPlugin 记录做兜底。
 """
 
 from __future__ import absolute_import, unicode_literals
 
+import json
 import re
 
 import maya.cmds as cmds
 
 _SUFFIX_RE = re.compile(r"\.(py|mll|bundle|so|pyd)$", re.I)
 _UNKNOWN_TYPES = ("unknown", "unknownDag", "unknownTransform")
+REQUIREMENTS_KEY = "mayaMarketNodes"
 
 
 def normalize_plugin_name(value):
@@ -54,13 +58,13 @@ def current_scene():
         return ""
 
 
-def match_requirements(plugin_names, entries, local_plugins=None):
-    """把缺失插件名匹配到在线条目 / 本地插件。
+def match_requirements(plugin_names, entries, local_plugins=None, requirement_ids=None):
+    """把场景需要的插件匹配到在线条目 / 本地插件。
 
-    返回 (entries, local, unmatched)：
-      entries   目录里有、可以直接安装的条目
-      local     本地 nodes/ 里已有、只是没加载的插件
-      unmatched 两边都没匹配上的插件名
+    requirement_ids 来自场景里写入的清单（最准，按节点序号匹配），
+    plugin_names 来自 Maya 的 unknownPlugin 记录（兜底）。
+
+    返回 (entries, local, unmatched)。
     """
     index = {}
     for entry in entries or []:
@@ -77,14 +81,24 @@ def match_requirements(plugin_names, entries, local_plugins=None):
     for plugin in local_plugins or []:
         for key in (normalize_plugin_name(plugin.path),
                     normalize_plugin_name(getattr(plugin, "plugin_name", "")),
-                    normalize_plugin_name(plugin.node_name)):
+                    normalize_plugin_name(plugin.node_name),
+                    str(plugin.node_id_text or "").lower()):
             if key:
                 local_index.setdefault(key, plugin)
 
+    wanted = []
+    for value in requirement_ids or []:
+        key = str(value or "").strip().lower()
+        if key:
+            wanted.append(key)
+    for name in plugin_names or []:
+        key = normalize_plugin_name(name)
+        if key:
+            wanted.append(key)
+
     matched, local, unmatched = [], [], []
     seen = set()
-    for name in plugin_names:
-        key = normalize_plugin_name(name)
+    for key in wanted:
         plugin = local_index.get(key)
         if plugin is not None:
             if plugin.node_id_text not in seen:
@@ -97,8 +111,73 @@ def match_requirements(plugin_names, entries, local_plugins=None):
                 matched.append(entry)
                 seen.add(entry.node_id_text)
             continue
-        unmatched.append(name)
+        unmatched.append(key)
     return matched, local, unmatched
+
+
+def collect_requirements(plugins):
+    """当前场景里真实用到的市场插件。"""
+    items = []
+    for plugin in plugins or []:
+        node_name = getattr(plugin, "node_name", "")
+        if not node_name:
+            continue
+        try:
+            if not cmds.ls(type=node_name):
+                continue
+        except Exception:
+            continue
+        items.append({
+            "node_id": plugin.node_id_text,
+            "node": node_name,
+            "name": plugin.title,
+            "version": plugin.version,
+        })
+    return items
+
+
+def save_requirements(plugins):
+    """把「这个文件用到哪些节点插件」写进场景 fileInfo，随文件一起保存。"""
+    items = collect_requirements(plugins)
+    try:
+        if items:
+            cmds.fileInfo(REQUIREMENTS_KEY, json.dumps(items, ensure_ascii=False))
+        else:
+            cmds.fileInfo(REQUIREMENTS_KEY, query=True, remove=True)
+    except Exception:
+        return []
+    return items
+
+
+def read_requirements():
+    """读取场景里记录的插件清单。"""
+    try:
+        values = cmds.fileInfo(REQUIREMENTS_KEY, query=True) or []
+    except Exception:
+        return []
+    if isinstance(values, (list, tuple)):
+        text = "".join(str(value) for value in values)
+    else:
+        text = str(values)
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def requirement_node_ids():
+    ids = []
+    for item in read_requirements():
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("node_id") or "").strip().lower()
+        if value:
+            ids.append(value)
+    return ids
 
 
 def add_scene_callback(callback):
@@ -128,3 +207,15 @@ def remove_scene_callbacks(ids):
             om.MSceneMessage.removeCallback(callback_id)
         except Exception:
             continue
+
+
+def add_save_callback(callback):
+    """注册「保存前」回调，用来把插件清单写进场景。"""
+    try:
+        import maya.api.OpenMaya as om
+    except Exception:
+        return None
+    try:
+        return om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeSave, callback)
+    except Exception:
+        return None
