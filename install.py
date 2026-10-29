@@ -1,96 +1,126 @@
 # -*- coding: utf-8 -*-
-"""节点插件市场 —— 唯一安装 / 启动入口
+"""节点插件市场 —— 安装到工具架并启动。
 
-用法：
-  把本文件拖入 Maya（脚本编辑器里执行，或拖入视口）即会：
-    1. 在当前架子上创建「节点插件市场」按钮；
-    2. 立即打开市场窗口。
-  之后点击架子按钮即可随时打开。
-
-注意：拖入 Maya 执行时不保证 __name__ == '__main__'，所以直接在模块
-末尾调用 install()，与旧版 install.py 的行为一致。
+把本文件直接拖进 Maya 即可：
+  1. 先清掉旧的「节点插件市场 / 权限窗口」工具架按钮，避免重复安装；
+  2. 在当前工具架创建一个新的「节点插件市场」按钮；
+  3. 打开市场窗口。
 """
+
 import os
 import sys
-import inspect
 import importlib
+import inspect
 
 import maya.cmds as cmds
 import maya.mel as mel
 
-# 当前文件所在目录（即 custom_commands 目录）
-FILE_DIR = os.path.join(
-    "\\".join(os.path.abspath(inspect.getsourcefile(lambda: 0)).split("\\")[:-1]))
-
-if FILE_DIR not in sys.path:
-    sys.path.insert(0, FILE_DIR)
-
-SHELF_BUTTON_NAME = "zkmNodeMarketShelfBtn"
+LABEL = u"节点插件市场"
+LEGACY_LABELS = (u"权限窗口",)
+LEGACY_NAMES = ("zkmNodeMarketShelfBtn",)
+MODULE_NAME = "custom_commands_window"
+ICON_NAME = "custom_commands_lcon.png"
 
 
-def create_shelf_button():
-    """在当前架子上创建「节点插件市场」按钮（已存在则先删掉再重建）。"""
-    gShelfTopLevel = mel.eval('string $my_gShelfTopLevel = $gShelfTopLevel')
-    current_shelf = str(cmds.tabLayout(gShelfTopLevel, query=1, selectTab=1))
-    cmds.setParent(current_shelf)
+def file_dir():
+    """本文件所在目录。Maya 拖拽执行时 __file__ 可能不存在，退回代码对象文件名。"""
+    path = globals().get("__file__")
+    if not path:
+        try:
+            frame = inspect.currentframe()
+            if frame is not None:
+                path = frame.f_code.co_filename
+        except Exception:
+            path = None
+    if not path:
+        return os.getcwd()
+    return os.path.dirname(os.path.abspath(path))
 
-    label = u"节点插件市场"
-    # 优先使用市场自己的图标，找不到再回退到 Maya 默认 Python 图标。
-    custom_icon = os.path.join(FILE_DIR, "custom_commands_lcon.png")
-    icon = custom_icon if os.path.isfile(custom_icon) else "pythonFamily.png"
-    module = "custom_commands_window"
 
-    # 先删除旧按钮，避免重复创建
+def _shelf_top():
+    return mel.eval("string $tmpShelfTop = $gShelfTopLevel")
+
+
+def remove_old_buttons():
+    """删掉所有旧的同名按钮，解决重复安装。返回删除数量。"""
+    removed = 0
     try:
-        if cmds.control(SHELF_BUTTON_NAME, exists=True):
-            cmds.deleteUI(SHELF_BUTTON_NAME)
+        top = _shelf_top()
+        shelves = cmds.tabLayout(top, query=True, childArray=True) or []
     except Exception:
-        pass
+        return 0
+    wanted = (LABEL,) + LEGACY_LABELS
+    for shelf in shelves:
+        try:
+            children = cmds.shelfLayout(shelf, query=True, childArray=True) or []
+        except Exception:
+            continue
+        for child in children:
+            try:
+                if not cmds.objectType(child, isType="shelfButton"):
+                    continue
+                label = cmds.shelfButton(child, query=True, label=True)
+            except Exception:
+                continue
+            if label in wanted or child in LEGACY_NAMES:
+                try:
+                    cmds.deleteUI(child)
+                    removed += 1
+                except Exception:
+                    pass
+    return removed
 
-    cmd = (
+
+def create_shelf_button(directory):
+    top = _shelf_top()
+    current = str(cmds.tabLayout(top, query=True, selectTab=True))
+    cmds.setParent(current)
+    icon = os.path.join(directory, ICON_NAME)
+    if not os.path.isfile(icon):
+        icon = "pythonFamily.png"
+    command = (
         "import sys\n"
-        "sys.path.insert(0, r'{path}')\n"
-        "import {module}\n"
+        "sys.path.append(r'%s')\n"
+        "import %s\n"
         "import importlib\n"
-        "importlib.reload({module})\n"
-        "from {module} import window\n"
-        "window.show()"
-    ).format(path=FILE_DIR, module=module)
-
+        "importlib.reload(%s)\n"
+        "%s.window.show()\n"
+    ) % (directory, MODULE_NAME, MODULE_NAME, MODULE_NAME)
     cmds.shelfButton(
-        SHELF_BUTTON_NAME,
+        name=LEGACY_NAMES[0],
         sourceType="python",
         image=icon,
-        label=label,
-        iol="",
-        command=cmd,
         image1=icon,
-        annotation=label,
+        label=LABEL,
+        annotation=LABEL,
+        iol="",
+        command=command,
     )
-    print(label + u" 架子按钮已安装。")
+    return icon
 
 
-def launch():
-    """导入并打开节点插件市场窗口。"""
-    import custom_commands_window
-    importlib.reload(custom_commands_window)
-    from custom_commands_window import window
-    return window.show()
+def launch(directory):
+    if directory not in sys.path:
+        sys.path.append(directory)
+    module = sys.modules.get(MODULE_NAME)
+    if module is not None:
+        importlib.reload(module)
+    else:
+        module = __import__(MODULE_NAME)
+    module.window.show()
 
 
 def install():
-    """安装架子按钮并立即打开窗口。
-
-    架子按钮创建失败不影响窗口打开；错误会打印到脚本编辑器。
-    """
+    directory = file_dir()
+    removed = remove_old_buttons()
+    if removed:
+        print(u"已清理 %d 个旧工具架按钮" % removed)
     try:
-        create_shelf_button()
+        create_shelf_button(directory)
+        print(u"%s 已安装到工具架" % LABEL)
     except Exception as exc:
-        # 架子相关失败（没有当前架子、MEL 变量未就绪等）只警告，
-        # 不能因此阻止市场窗口打开。
-        cmds.warning(u"创建架子按钮失败（窗口仍会打开）：%s" % exc)
-    return launch()
+        cmds.warning(u"创建工具架按钮失败：%s" % exc)
+    launch(directory)
 
 
-# 拖入 Maya 即执行（不依赖 __name__ == '__main__'）
 install()
