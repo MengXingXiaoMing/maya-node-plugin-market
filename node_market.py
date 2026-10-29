@@ -455,9 +455,6 @@ def parse_plugin_file(path, folder_id=None):
     node_ids = _unique(node_ids)
     commands = _unique(commands)
 
-    if not node_names and not node_ids:
-        return []
-
     meta_node = meta.get("node") or meta.get("node_name")
     meta_id = normalize_node_id(meta.get("node_id") or meta.get("nodeId") or meta.get("id"))
     if meta_node and meta_node not in node_names:
@@ -465,9 +462,13 @@ def parse_plugin_file(path, folder_id=None):
     if meta_id is not None and meta_id not in node_ids:
         node_ids.insert(0, meta_id)
 
-    if not node_ids:
+    # 纯命令插件（只 registerCommand）没有 registerNode / MTypeId，
+    # 靠 NODE_INFO 里声明的 node_id 识别；两者都没有才算不是插件。
+    if not node_names and not node_ids:
         return []
 
+    if not node_ids:
+        return []
     # 配对：一个文件注册多个节点时，尽量让节点名与序号一一对应。
     pairs = []
     if len(node_names) == len(node_ids):
