@@ -65,7 +65,7 @@ import online_market
 importlib.reload(node_market)
 importlib.reload(online_market)
 
-TOOL_VERSION = "2.3"
+TOOL_VERSION = "2.4"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -142,6 +142,19 @@ QPushButton#tabButton:checked {
 #loadedText { color: #63c98d; font-size: 11px; }
 #unloadedText { color: #8c93a0; font-size: 11px; }
 #updateText { color: #e0b25a; font-size: 11px; }
+QDialog#taskDialog { background: #24272e; }
+#taskTitle { color: #f2f4f8; font-size: 18px; font-weight: 700; }
+#taskName { color: #cfe0ff; font-size: 13px; }
+#taskStep { color: #9aa1ad; font-size: 12px; }
+#taskDetail { color: #7f8794; font-size: 11px; }
+QProgressBar {
+    background: #1d2025; color: #dfe5ee; border: 1px solid #3a3e48;
+    border-radius: 6px; min-height: 18px; text-align: center; font-size: 10px;
+}
+QProgressBar::chunk {
+    border-radius: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4a86e8, stop:1 #8a6cf0);
+}
 QPushButton#tagChip {
     background: #24262c; color: #9aa1ad; border: 1px solid #363a44;
     border-radius: 10px; padding: 3px 10px; font-size: 11px;
@@ -913,6 +926,101 @@ class OnlineDetailDialog(QtWidgets.QDialog):
         layout.addLayout(buttons)
 
         self.setStyleSheet(QSS)
+
+
+class TaskProgressDialog(QtWidgets.QDialog):
+    """安装 / 更新的二级进度页：阶段说明 + 进度条 + 详情 + 取消。"""
+
+    def __init__(self, title, task, parent=None):
+        super(TaskProgressDialog, self).__init__(parent)
+        self.setObjectName("taskDialog")
+        self.setWindowTitle(title)
+        self.setWindowModality(Qt.WindowModal)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.setMinimumWidth(540)
+        self.resize(580, 220)
+        self._running = True
+        self._cancelled = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 16)
+        layout.setSpacing(9)
+
+        self.title_label = QtWidgets.QLabel(title)
+        self.title_label.setObjectName("taskTitle")
+        self.task_label = QtWidgets.QLabel(task)
+        self.task_label.setObjectName("taskName")
+        self.step_label = QtWidgets.QLabel("准备中...")
+        self.step_label.setObjectName("taskStep")
+        self.step_label.setWordWrap(True)
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setRange(0, 0)
+        self.bar.setFormat("")
+        self.detail_label = QtWidgets.QLabel("")
+        self.detail_label.setObjectName("taskDetail")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setMinimumHeight(34)
+        self.detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.task_label)
+        layout.addSpacing(4)
+        layout.addWidget(self.step_label)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.detail_label)
+        layout.addStretch(1)
+
+        footer = QtWidgets.QHBoxLayout()
+        footer.addStretch(1)
+        self.cancel_button = QtWidgets.QPushButton("取消")
+        self.cancel_button.setObjectName("ghostButton")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.clicked.connect(self.request_cancel)
+        footer.addWidget(self.cancel_button)
+        layout.addLayout(footer)
+
+        self.setStyleSheet(QSS)
+
+    def set_stage(self, message, percent=None, detail=""):
+        self.step_label.setText(message)
+        if percent is None:
+            if self.bar.maximum() != 0:
+                self.bar.setRange(0, 0)
+                self.bar.setFormat("")
+        else:
+            if self.bar.maximum() == 0:
+                self.bar.setRange(0, 100)
+                self.bar.setFormat("%p%")
+            self.bar.setValue(max(0, min(100, int(percent))))
+        if detail:
+            self.detail_label.setText(detail)
+
+    def set_detail(self, detail):
+        self.detail_label.setText(detail)
+
+    def was_cancelled(self):
+        return self._cancelled
+
+    def request_cancel(self):
+        if not self._running:
+            return
+        self._cancelled = True
+        self.cancel_button.setEnabled(False)
+        self.step_label.setText("正在取消，请稍候...")
+
+    def reject(self):
+        self.request_cancel()
+
+    def closeEvent(self, event):
+        if self._running:
+            self.request_cancel()
+            event.ignore()
+            return
+        event.accept()
+
+    def finish(self):
+        self._running = False
+        self.close()
 
 
 # ---------------------------------------------------------------------------
@@ -2021,34 +2129,37 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if reply != QtWidgets.QMessageBox.Yes:
             return
 
-        progress = QtWidgets.QProgressDialog(
-            "正在下载并%s「%s」..." % (action, entry.title), "取消", 0, 0, self)
-        progress.setWindowTitle("在线插件")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setCancelButtonText("取消")
-        progress.setMinimumDuration(0)
-        progress.show()
+        dialog = TaskProgressDialog(
+            "安装在线插件" if action == "安装" else "更新在线插件",
+            entry.title, self)
+        dialog.set_stage(
+            "准备下载插件包...", 1,
+            "节点：%s · %s\n来源：%s%s" % (
+                entry.node_name, entry.node_id_text, entry.repo,
+                ("/" + entry.subpath) if entry.subpath else ""))
+        dialog.show()
         QtWidgets.QApplication.processEvents()
 
-        def tick():
+        def report(stage, message, percent=None, detail=""):
+            dialog.set_stage(message, percent, detail)
             QtWidgets.QApplication.processEvents()
-            if progress.wasCanceled():
+            if stage != "done" and dialog.was_cancelled():
                 raise online_market.Cancelled()
 
         try:
-            target = online_market.install_entry(entry, self.nodes_dir, tick)
+            online_market.install_entry(entry, self.nodes_dir, report)
         except online_market.Cancelled:
-            progress.close()
+            dialog.finish()
             self.notify("已取消%s" % action, False)
             return
         except Exception as exc:
-            progress.close()
+            dialog.finish()
             QtWidgets.QMessageBox.warning(
                 self, "%s失败" % action,
                 "无法安装「%s」：\n%s" % (entry.title, exc))
             cmds.warning("在线插件%s失败（%s）：%s" % (action, entry.title, exc))
             return
-        progress.close()
+        dialog.finish()
         self.refresh()
         suffix = "，点「运行」重新加载即可生效" if installed is not None else ""
         self.notify("%s：%s成功%s" % (entry.title, action, suffix), True)
@@ -2064,55 +2175,72 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if reply != QtWidgets.QMessageBox.Yes:
             return
 
-        progress = QtWidgets.QProgressDialog(
-            "正在从 GitHub 下载最新版...", "", 0, 0, self)
-        progress.setWindowTitle("市场更新")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setCancelButtonText("取消")
-        progress.setMinimumDuration(0)
-        progress.show()
+        dialog = TaskProgressDialog("更新插件市场", "节点插件市场", self)
+        dialog.set_stage("准备从 GitHub 下载市场更新包...", 1, MARKET_GITHUB_URL)
+        dialog.show()
         QtWidgets.QApplication.processEvents()
 
+        def report(stage, message, percent=None, detail=""):
+            dialog.set_stage(message, percent, detail)
+            QtWidgets.QApplication.processEvents()
+            if stage != "done" and dialog.was_cancelled():
+                raise online_market.Cancelled()
+
         try:
-            copied = self._download_market_update(progress)
+            copied = self._download_market_update(report)
+        except online_market.Cancelled:
+            dialog.finish()
+            self.notify("已取消市场更新", False)
+            return
         except Exception as exc:
-            progress.close()
-            if progress.wasCanceled():
-                self.notify("已取消市场更新", False)
-                return
+            dialog.finish()
             QtWidgets.QMessageBox.warning(
                 self, "更新失败", "无法从 GitHub 下载更新：\n%s" % exc)
             cmds.warning("插件市场更新失败：%s" % exc)
             return
-        progress.close()
+        dialog.finish()
 
         self.notify("市场已更新：%s" % ", ".join(copied), True)
         QtWidgets.QMessageBox.information(
             self, "更新完成",
             "市场代码已覆盖更新：\n%s\n\n关闭并重新打开市场后生效。" % "\n".join(copied))
 
-    def _download_market_update(self, progress=None):
+    def _download_market_update(self, report=None):
         request = UrlRequest(
             UPDATE_ZIP_URL,
             headers={"User-Agent": "MayaNodeMarket/%s" % TOOL_VERSION})
         response = urlopen(request, timeout=30)
         chunks = []
         try:
+            total = 0
+            try:
+                total = int(response.headers.get("Content-Length") or 0)
+            except Exception:
+                total = 0
+            downloaded = 0
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:
                     break
                 chunks.append(chunk)
-                if progress is not None:
-                    QtWidgets.QApplication.processEvents()
-                    if progress.wasCanceled():
-                        raise IOError("更新已取消")
+                downloaded += len(chunk)
+                percent = None
+                if total > 0:
+                    percent = 3 + 55.0 * downloaded / total
+                detail = "已下载 %s" % online_market.human_bytes(downloaded)
+                if total > 0:
+                    detail += " / %s" % online_market.human_bytes(total)
+                if report is not None:
+                    report("download", "正在下载市场更新包...", percent, detail)
         finally:
             response.close()
         data = b"".join(chunks)
         if not data or len(data) < 512:
             raise IOError("GitHub 返回的更新包为空")
 
+        if report is not None:
+            report("verify", "正在校验更新包...", 65,
+                   "更新包：%s" % online_market.human_bytes(len(data)))
         archive = zipfile.ZipFile(io.BytesIO(data))
         sources = {}
         try:
@@ -2123,7 +2251,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         finally:
             archive.close()
 
-        missing = [name for name in ("custom_commands_window.py", "node_market.py")
+        missing = [name for name in (
+            "custom_commands_window.py", "node_market.py", "online_market.py")
                    if name not in sources]
         if missing:
             raise IOError("更新包缺少文件：%s" % ", ".join(missing))
@@ -2134,6 +2263,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             if os.path.isfile(target):
                 backup[name] = io.open(target, "rb").read()
 
+        if report is not None:
+            report("backup", "正在备份本地市场代码...", 78,
+                   "将覆盖 %d 个文件" % len(sources))
         written = []
         try:
             for name, content in sources.items():
@@ -2141,6 +2273,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 with io.open(target, "wb") as handle:
                     handle.write(content)
                 written.append(name)
+                if report is not None:
+                    report("write", "正在覆盖市场代码...", 88,
+                           "已写入 %s" % name)
         except Exception:
             for name, content in backup.items():
                 try:
@@ -2149,6 +2284,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 except Exception:
                     pass
             raise
+        if report is not None:
+            report("done", "市场代码更新完成", 100,
+                   "共更新 %d 个文件" % len(written))
         return sorted(written)
 
     def import_plugin_file(self):
