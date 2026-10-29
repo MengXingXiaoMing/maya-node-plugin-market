@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.3"
+TOOL_VERSION = "3.1.4"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -577,6 +577,12 @@ QPushButton#ghostButton {
     border-radius: 8px; padding: 5px 12px; font-size: 12px;
 }
 QPushButton#ghostButton:hover { background: #2c3038; color: #e6e9ef; border-color: #4a4f5b; }
+QPushButton#ghostButton[update="true"] {
+    background: #2f4f86; color: #eaf1ff; border-color: #4a86e8;
+}
+QPushButton#ghostButton[update="true"]:hover {
+    background: #3a62a5; color: #ffffff; border-color: #6aa2f5;
+}
 QPushButton#linkButton {
     background: #24262c; color: #a9c8f5; border: 1px solid #363a44;
     border-radius: 10px; padding: 10px 14px; text-align: left; font-size: 12px;
@@ -2004,6 +2010,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._update_worker = None
         self._update_cancel = None
         self.market_update_available = ""
+        self._version_checked_at = 0.0
         self.scene_hook_ids = []
         self.scene_save_id = None
         self._scene_prompted = set()
@@ -3217,6 +3224,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 card.set_stars(stars[card.entry.repo])
 
     def check_market_version(self):
+        self._version_checked_at = time.time()
         worker = VersionWorker()
         thread = QtCore.QThread(self)
         worker.moveToThread(thread)
@@ -3229,14 +3237,41 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._version_thread = thread
         thread.start()
 
-    def _on_version_checked(self, version):
-        if not version or not online_market.is_newer(version, TOOL_VERSION):
+    def _maybe_check_version(self, interval=300):
+        """启动时检查过一次后，切到「在线」页时隔一段时间再补查一次。"""
+        if time.time() - self._version_checked_at < interval:
             return
-        self.market_update_available = version
-        self.update_button.setText("更新 · v%s" % version)
-        self.update_button.setToolTip(
-            "有新版本 v%s，点这里从 GitHub 更新市场代码" % version)
-        self.notify("插件市场有新版本 v%s，可点右上角「更新」" % version, True)
+        if getattr(self, "_version_thread", None) is not None:
+            try:
+                if self._version_thread.isRunning():
+                    return
+            except Exception:
+                pass
+        self.check_market_version()
+
+    def _set_update_available(self, version):
+        """有新版本时把「更新」按钮高亮 + 显示版本号，没有就恢复原样。"""
+        self.market_update_available = version or ""
+        if version:
+            self.update_button.setText("更新 · v%s" % version)
+            self.update_button.setToolTip(
+                "有新版本 v%s，点这里从 GitHub 更新市场代码" % version)
+        else:
+            self.update_button.setText("更新")
+            self.update_button.setToolTip("从 GitHub 下载最新版市场代码并覆盖安装")
+        self.update_button.setProperty("update", bool(version))
+        style = self.update_button.style()
+        style.unpolish(self.update_button)
+        style.polish(self.update_button)
+
+    def _on_version_checked(self, version):
+        if not version:
+            return
+        if online_market.is_newer(version, TOOL_VERSION):
+            self._set_update_available(version)
+            self.notify("插件市场有新版本 v%s，可点右上角「更新」" % version, True)
+        else:
+            self._set_update_available("")
 
     def update_all_online(self):
         local_by_id = {}
@@ -3669,6 +3704,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if index == 1:
             if not self.online_catalog and not self.online_loading:
                 self.fetch_online_catalog()
+            self._maybe_check_version()
         if index == 2:
             self.build_favorites()
         if index == 3:
@@ -3903,6 +3939,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             cmds.warning("插件市场更新失败：%s" % error)
             return
         self.notify("市场已更新：%s" % ", ".join(copied), True)
+        self._set_update_available("")
         QtWidgets.QMessageBox.information(
             self, "更新完成",
             "市场代码已覆盖更新：\n%s\n\n关闭并重新打开市场后生效。" % "\n".join(copied))
