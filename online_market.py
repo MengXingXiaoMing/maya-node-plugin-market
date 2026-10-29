@@ -31,7 +31,7 @@ INDEX_REPO = "maya-node-plugin-index"
 INDEX_BRANCH = "main"
 INDEX_URL = "https://github.com/%s/%s" % (INDEX_OWNER, INDEX_REPO)
 CACHE_VERSION = 1
-USER_AGENT = "MayaNodeMarket/2.7"
+USER_AGENT = "MayaNodeMarket/2.8"
 
 
 class Cancelled(Exception):
