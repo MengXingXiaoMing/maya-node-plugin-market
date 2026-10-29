@@ -67,7 +67,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "2.8"
+TOOL_VERSION = "2.9"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -742,15 +742,7 @@ class OnlineCard(QtWidgets.QFrame):
             "打开已安装目录：\n%s" % plugin.path if plugin and plugin.path
             else "安装后可以打开本地目录")
         self.folder_button.setVisible(bool(plugin and plugin.path))
-        if not online_market.supports_maya(self.entry, _maya_version):
-            supported = "、".join(self.entry.maya_versions)
-            self.state_label.setText("不支持 Maya %s" % _maya_version)
-            self.state_label.setObjectName("updateText")
-            self.state_label.setToolTip("该插件只支持 Maya %s" % supported)
-            self.primary_button.setText("不兼容")
-            self.primary_button.setEnabled(False)
-            self.primary_button.setToolTip("该插件只支持 Maya %s" % supported)
-        elif plugin is None:
+        if plugin is None:
             self.state_label.setText("未安装")
             self.state_label.setObjectName("unloadedText")
             self.state_label.setToolTip("")
@@ -957,15 +949,12 @@ class OnlineDetailDialog(QtWidgets.QDialog):
         desc.setMinimumHeight(96)
         layout.addWidget(desc)
 
-        compatible = online_market.supports_maya(entry, _maya_version)
         if installed is None:
             state_text = "未安装"
         elif online_market.is_newer(entry.version, installed.version):
             state_text = "已安装 v%s，可更新到 v%s" % (installed.version, entry.version)
         else:
             state_text = "已安装 v%s" % (installed.version or "")
-        if not compatible:
-            state_text += "（只支持 Maya %s）" % "、".join(entry.maya_versions)
         fields = [
             ("节点类型", entry.node_name or "—"),
             ("注册序号", entry.node_id_text),
@@ -1008,10 +997,7 @@ class OnlineDetailDialog(QtWidgets.QDialog):
         copy_button.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(entry.node_id_text))
         buttons.addWidget(copy_button)
         buttons.addStretch(1)
-        if not compatible:
-            action_text = "不兼容"
-            enabled = False
-        elif installed is not None and not online_market.is_newer(entry.version, installed.version):
+        if installed is not None and not online_market.is_newer(entry.version, installed.version):
             action_text = "已安装"
             enabled = False
         elif installed is not None:
@@ -2111,8 +2097,6 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             plugin = local_by_id.get(entry.node_id_text)
             if plugin is None:
                 continue
-            if not online_market.supports_maya(entry, _maya_version):
-                continue
             if online_market.is_newer(entry.version, plugin.version):
                 pending += 1
         self.online_update_all_button.setText(
@@ -2162,8 +2146,6 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         for entry in self.online_entries:
             plugin = local_by_id.get(entry.node_id_text)
             if plugin is None:
-                continue
-            if not online_market.supports_maya(entry, _maya_version):
                 continue
             if online_market.is_newer(entry.version, plugin.version):
                 pending.append((entry, plugin))
@@ -2651,12 +2633,6 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         exec_dialog(dialog)
 
     def install_online_entry(self, entry):
-        if not online_market.supports_maya(entry, _maya_version):
-            QtWidgets.QMessageBox.warning(
-                self, "版本不兼容",
-                "「%s」只支持 Maya %s，当前是 Maya %s。" % (
-                    entry.title, "、".join(entry.maya_versions), _maya_version))
-            return
         installed = self._local_plugin_for(entry)
         if installed is not None and not online_market.is_newer(entry.version, installed.version):
             self.notify("%s 已经是最新版本" % entry.title, True)
