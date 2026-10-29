@@ -75,7 +75,7 @@ def _read_url(url, timeout, headers=None):
         response.close()
 
 
-def fetch_catalog(timeout=15):
+def fetch_catalog(timeout=8):
     errors = []
     for source in catalog_urls():
         try:
