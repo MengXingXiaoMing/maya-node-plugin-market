@@ -65,7 +65,7 @@ import online_market
 importlib.reload(node_market)
 importlib.reload(online_market)
 
-TOOL_VERSION = "2.4"
+TOOL_VERSION = "2.5"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -108,6 +108,12 @@ QLineEdit#searchBox {
     selection-background-color: #3b6fd4;
 }
 QLineEdit#searchBox:focus { border-color: #5b9dff; }
+QLineEdit#tagSearch {
+    background: #1b1d22; border: 1px solid #343842; border-radius: 8px;
+    padding-left: 9px; padding-right: 9px; color: #dfe3ea; font-size: 11px;
+    selection-background-color: #3b6fd4;
+}
+QLineEdit#tagSearch:focus { border-color: #5b9dff; }
 QLineEdit#pathEdit {
     background: #1b1d22; border: 1px solid #3a3d46; border-radius: 8px;
     padding: 6px 10px; color: #dfe3ea; font-size: 12px;
@@ -557,7 +563,7 @@ class OnlineCard(QtWidgets.QFrame):
 
         self.setObjectName("pluginCard")
         self.setFixedWidth(320)
-        self.setMinimumHeight(198)
+        self.setMinimumHeight(216)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
@@ -601,6 +607,12 @@ class OnlineCard(QtWidgets.QFrame):
         node_row.addWidget(self.node_label, 1)
         node_row.addWidget(self.id_label, 0)
         layout.addLayout(node_row)
+
+        self.date_label = QtWidgets.QLabel(
+            ("更新于 %s" % entry.updated) if entry.updated else "")
+        self.date_label.setObjectName("cardMeta")
+        self.date_label.setVisible(bool(entry.updated))
+        layout.addWidget(self.date_label)
 
         self.desc_label = QtWidgets.QLabel(node_market.shorten(entry.description or "作者没有填写详情。", 52))
         self.desc_label.setObjectName("cardDesc")
@@ -673,21 +685,35 @@ class OnlineCard(QtWidgets.QFrame):
             "打开已安装目录：\n%s" % plugin.path if plugin and plugin.path
             else "安装后可以打开本地目录")
         self.folder_button.setVisible(bool(plugin and plugin.path))
-        if plugin is None:
+        if not online_market.supports_maya(self.entry, _maya_version):
+            supported = "、".join(self.entry.maya_versions)
+            self.state_label.setText("不支持 Maya %s" % _maya_version)
+            self.state_label.setObjectName("updateText")
+            self.state_label.setToolTip("该插件只支持 Maya %s" % supported)
+            self.primary_button.setText("不兼容")
+            self.primary_button.setEnabled(False)
+            self.primary_button.setToolTip("该插件只支持 Maya %s" % supported)
+        elif plugin is None:
             self.state_label.setText("未安装")
             self.state_label.setObjectName("unloadedText")
+            self.state_label.setToolTip("")
             self.primary_button.setText("安装")
             self.primary_button.setEnabled(True)
+            self.primary_button.setToolTip("")
         elif online_market.is_newer(self.entry.version, plugin.version):
             self.state_label.setText("可更新 → v%s" % self.entry.version)
             self.state_label.setObjectName("updateText")
+            self.state_label.setToolTip("")
             self.primary_button.setText("更新")
             self.primary_button.setEnabled(True)
+            self.primary_button.setToolTip("")
         else:
             self.state_label.setText("已安装 v%s" % (plugin.version or ""))
             self.state_label.setObjectName("loadedText")
+            self.state_label.setToolTip("")
             self.primary_button.setText("已安装")
             self.primary_button.setEnabled(False)
+            self.primary_button.setToolTip("")
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
 
@@ -862,12 +888,15 @@ class OnlineDetailDialog(QtWidgets.QDialog):
         desc.setMinimumHeight(96)
         layout.addWidget(desc)
 
+        compatible = online_market.supports_maya(entry, _maya_version)
         if installed is None:
             state_text = "未安装"
         elif online_market.is_newer(entry.version, installed.version):
             state_text = "已安装 v%s，可更新到 v%s" % (installed.version, entry.version)
         else:
             state_text = "已安装 v%s" % (installed.version or "")
+        if not compatible:
+            state_text += "（只支持 Maya %s）" % "、".join(entry.maya_versions)
         fields = [
             ("节点类型", entry.node_name or "—"),
             ("注册序号", entry.node_id_text),
@@ -875,6 +904,7 @@ class OnlineDetailDialog(QtWidgets.QDialog):
             ("仓库", entry.repo or "—"),
             ("子目录", entry.subpath or "—"),
             ("Maya 版本", ", ".join(entry.maya_versions) if entry.maya_versions else "—"),
+            ("更新时间", entry.updated or "—"),
             ("本地状态", state_text),
         ]
         grid = QtWidgets.QGridLayout()
@@ -909,7 +939,10 @@ class OnlineDetailDialog(QtWidgets.QDialog):
         copy_button.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(entry.node_id_text))
         buttons.addWidget(copy_button)
         buttons.addStretch(1)
-        if installed is not None and not online_market.is_newer(entry.version, installed.version):
+        if not compatible:
+            action_text = "不兼容"
+            enabled = False
+        elif installed is not None and not online_market.is_newer(entry.version, installed.version):
             action_text = "已安装"
             enabled = False
         elif installed is not None:
@@ -1050,7 +1083,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.favorite_cards = []
         self.favorites = set(load_state().get("favorites") or [])
         self.warnings = []
-        self.active_tag = None
+        self.active_tags = set()
+        self.tag_query = ""
         self.tag_source = "local"
         self.scan_folders = 0
         self.scan_files = 0
@@ -1171,8 +1205,17 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         tools_row.addWidget(tabs)
         header_layout.addLayout(tools_row)
 
-        # 标签栏：识别到的 NODE_INFO.tags 自动加入这里
+        # 标签栏：识别到的 NODE_INFO.tags 自动加入这里，可多选，可搜索
         self.tag_buttons = []
+        self.tag_row = QtWidgets.QHBoxLayout()
+        self.tag_row.setSpacing(8)
+        self.tag_search = QtWidgets.QLineEdit()
+        self.tag_search.setObjectName("tagSearch")
+        self.tag_search.setPlaceholderText("搜索标签")
+        self.tag_search.setClearButtonEnabled(True)
+        self.tag_search.setFixedSize(136, 28)
+        self.tag_search.textChanged.connect(self.on_tag_query)
+        self.tag_row.addWidget(self.tag_search, 0, Qt.AlignVCenter)
         self.tag_bar = QtWidgets.QScrollArea()
         self.tag_bar.setObjectName("tagBar")
         self.tag_bar.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -1187,7 +1230,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.tag_layout.setSpacing(6)
         self.tag_bar.setWidget(self.tag_host)
         self.tag_bar.setVisible(False)
-        header_layout.addWidget(self.tag_bar)
+        self.tag_row.addWidget(self.tag_bar, 1)
+        header_layout.addLayout(self.tag_row)
         outer.addWidget(header)
 
         # 内容
@@ -1625,33 +1669,40 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 total += 1
                 for tag in set(plugin.tags):
                     counts[tag] = counts.get(tag, 0) + 1
-        if self.active_tag and self.active_tag not in counts:
-            self.active_tag = None
+
+        # 切页后当前页没有的标签自动取消，避免一直筛出空结果
+        self.active_tags &= set(counts)
 
         if not counts:
             self.tag_bar.setVisible(False)
+            self.tag_search.setVisible(False)
             return
+        self.tag_search.setVisible(self.stack.currentIndex() in (0, 1, 2))
 
         def add_chip(label, tag, count):
             button = QtWidgets.QPushButton(label)
             button.setObjectName("tagChip")
             button.setCheckable(True)
-            button.setChecked(tag == self.active_tag)
+            button.setChecked(tag in self.active_tags)
             button.setCursor(Qt.PointingHandCursor)
             button.setProperty("tagValue", tag if tag is not None else "")
             if tag is None:
-                button.setToolTip("显示全部标签")
+                button.setToolTip("清空已选标签")
             else:
-                button.setToolTip("%s：%d 个插件" % (tag, count))
-            button.clicked.connect(lambda checked=False, t=tag: self.set_tag(t))
+                button.setToolTip("%s：%d 个插件\n点击可多选，再点一次取消" % (tag, count))
+            button.clicked.connect(lambda checked=False, t=tag: self.toggle_tag(t))
             self.tag_layout.addWidget(button)
             self.tag_buttons.append(button)
 
         add_chip("全部", None, total)
+        query = (self.tag_query or "").strip().lower()
         for tag in sorted(counts, key=lambda item: (-counts[item], item)):
+            if query and query not in tag.lower() and tag not in self.active_tags:
+                continue
             add_chip(tag, tag, counts[tag])
         QtCore.QTimer.singleShot(0, self._resize_tag_host)
         self.tag_bar.setVisible(self.stack.currentIndex() in (0, 1, 2))
+        self.set_tag_summary()
 
     def _resize_tag_host(self):
         if not hasattr(self, "tag_host") or not self.tag_buttons:
@@ -1660,12 +1711,30 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if hint.width() > 0 and hint.height() > 0:
             self.tag_host.setFixedSize(hint)
 
-    def set_tag(self, tag):
-        self.active_tag = tag
+    def on_tag_query(self, text):
+        self.tag_query = text or ""
+        self.build_tag_bar()
+        self.apply_filter(self.search_box.text())
+
+    def toggle_tag(self, tag):
+        if tag is None:
+            self.active_tags.clear()
+        elif tag in self.active_tags:
+            self.active_tags.discard(tag)
+        else:
+            self.active_tags.add(tag)
         for button in self.tag_buttons:
             value = button.property("tagValue") or ""
-            button.setChecked((value or None) == tag)
+            button.setChecked(bool(value) and value in self.active_tags)
+        self.set_tag_summary()
         self.apply_filter(self.search_box.text())
+
+    def set_tag_summary(self):
+        if self.active_tags:
+            self.tag_search.setPlaceholderText(
+                "搜索标签（已选 %d 个）" % len(self.active_tags))
+        else:
+            self.tag_search.setPlaceholderText("搜索标签")
 
     def build_cards(self):
         while self.grid.count():
@@ -1889,7 +1958,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             plugin = card.plugin
             match = not text or text in plugin.search_text()
             tags = getattr(plugin, "all_tags", None) or plugin.tags
-            if match and self.active_tag and self.active_tag not in tags:
+            if match and self.active_tags and not self.active_tags.issubset(set(tags)):
                 match = False
             card.setVisible(match)
             if match:
@@ -2021,6 +2090,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if index in (0, 1, 2):
             self.build_tag_bar("online" if index == 1 else "local")
         self.tag_bar.setVisible(index in (0, 1, 2) and bool(self.tag_buttons))
+        self.tag_search.setVisible(index in (0, 1, 2) and bool(self.tag_buttons))
         if index == 1:
             if not self.online_catalog and not self.online_loading:
                 self.fetch_online_catalog()
@@ -2114,6 +2184,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         exec_dialog(dialog)
 
     def install_online_entry(self, entry):
+        if not online_market.supports_maya(entry, _maya_version):
+            QtWidgets.QMessageBox.warning(
+                self, "版本不兼容",
+                "「%s」只支持 Maya %s，当前是 Maya %s。" % (
+                    entry.title, "、".join(entry.maya_versions), _maya_version))
+            return
         installed = self._local_plugin_for(entry)
         if installed is not None and not online_market.is_newer(entry.version, installed.version):
             self.notify("%s 已经是最新版本" % entry.title, True)
@@ -2122,8 +2198,10 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         reply = QtWidgets.QMessageBox.question(
             self, "%s在线插件" % action,
             "将从 GitHub 下载「%s」并%s到：\n%s/%s\n\n"
-            "如果本地已有同序号目录，会先备份再覆盖。\n继续？" % (
-                entry.title, action, self.nodes_dir, entry.node_id_text),
+            "作者：%s　版本：v%s　更新于：%s\n"
+            "如果本地已有同序号目录，会先备份到 nodes/.backup 再覆盖。\n继续？" % (
+                entry.title, action, self.nodes_dir, entry.node_id_text,
+                entry.author or "未署名", entry.version or "—", entry.updated or "—"),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.Yes)
         if reply != QtWidgets.QMessageBox.Yes:
