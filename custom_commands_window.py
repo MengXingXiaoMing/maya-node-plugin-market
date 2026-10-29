@@ -114,6 +114,23 @@ QLineEdit#tagSearch {
     selection-background-color: #3b6fd4;
 }
 QLineEdit#tagSearch:focus { border-color: #5b9dff; }
+QCheckBox#filterCheck { color: #aab1bd; font-size: 11px; spacing: 6px; }
+QCheckBox#filterCheck::indicator {
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid #3a3e48; background: #1b1d22;
+}
+QCheckBox#filterCheck::indicator:checked {
+    background: #4a86e8; border-color: #4a86e8;
+}
+QComboBox#sortBox {
+    background: #1b1d22; color: #dfe3ea; border: 1px solid #3a3e48;
+    border-radius: 7px; padding: 3px 8px; font-size: 11px; min-width: 88px;
+}
+QComboBox#sortBox::drop-down { border: none; width: 16px; }
+QComboBox#sortBox QAbstractItemView {
+    background: #22252b; color: #dfe3ea; border: 1px solid #3a3e48;
+    selection-background-color: #3b6fd4;
+}
 QLineEdit#pathEdit {
     background: #1b1d22; border: 1px solid #3a3d46; border-radius: 8px;
     padding: 6px 10px; color: #dfe3ea; font-size: 12px;
@@ -493,6 +510,8 @@ class PluginCard(QtWidgets.QFrame):
         if node_market.plugin_loaded(self.plugin.path):
             menu.addSeparator()
             menu.addAction("卸载插件", lambda: self._on_menu("unload", self.plugin))
+        menu.addSeparator()
+        menu.addAction("删除插件（移到备份）", lambda: self._on_menu("delete", self.plugin))
         exec_menu(menu, QtGui.QCursor.pos())
 
     def eventFilter(self, obj, event):
@@ -546,6 +565,32 @@ class CatalogWorker(QtCore.QObject):
             self.done.emit(False, None, str(exc))
             return
         self.done.emit(True, data, "")
+
+
+class StarsWorker(QtCore.QObject):
+    done = QtCore.Signal(object)
+
+    def __init__(self, repos):
+        super(StarsWorker, self).__init__()
+        self.repos = list(repos)
+
+    def run(self):
+        try:
+            stars = online_market.fetch_repo_stars(self.repos)
+        except Exception:
+            stars = {}
+        self.done.emit(stars)
+
+
+class VersionWorker(QtCore.QObject):
+    done = QtCore.Signal(str)
+
+    def run(self):
+        try:
+            version = online_market.fetch_remote_version()
+        except Exception:
+            version = ""
+        self.done.emit(version)
 
 
 class OnlineCard(QtWidgets.QFrame):
@@ -608,8 +653,8 @@ class OnlineCard(QtWidgets.QFrame):
         node_row.addWidget(self.id_label, 0)
         layout.addLayout(node_row)
 
-        self.date_label = QtWidgets.QLabel(
-            ("更新于 %s" % entry.updated) if entry.updated else "")
+        self._date_text = ("更新于 %s" % entry.updated) if entry.updated else ""
+        self.date_label = QtWidgets.QLabel(self._date_text)
         self.date_label.setObjectName("cardMeta")
         self.date_label.setVisible(bool(entry.updated))
         layout.addWidget(self.date_label)
@@ -719,6 +764,18 @@ class OnlineCard(QtWidgets.QFrame):
 
     def refresh_state(self):
         self.set_installed(self._installed)
+
+    def set_stars(self, count):
+        """count < 0 表示还没查到，保持原样。"""
+        if count is None or count < 0:
+            self.date_label.setText(self._date_text)
+            self.date_label.setVisible(bool(self._date_text))
+            return
+        suffix = "★ %d" % count
+        text = ("%s  ·  %s" % (self._date_text, suffix)) if self._date_text else suffix
+        self.date_label.setText(text)
+        self.date_label.setToolTip("GitHub 仓库 star 数")
+        self.date_label.setVisible(True)
 
     def _show_menu(self, position):
         menu = QtWidgets.QMenu(self)
@@ -1099,6 +1156,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.online_error = ""
         self.online_loading = False
         self._catalog_worker = None
+        self.online_page_index = 0
+        self.online_page_size = 24
+        self.online_sort_key = "updated"
+        self.online_stars = {}
+        self._stars_worker = None
+        self.market_update_available = ""
         cached, cached_at = online_market.load_catalog_cache(CATALOG_CACHE_PATH)
         if cached:
             self.online_catalog = cached
@@ -1109,6 +1172,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.refresh()
         self.switch_tab(0)
         QtCore.QTimer.singleShot(0, self.fetch_online_catalog)
+        QtCore.QTimer.singleShot(400, self.check_market_version)
 
     # ------------------------------------------------------------------
     # 建界面
@@ -1360,6 +1424,33 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         toolbar.addWidget(self.online_source_button)
         host_layout.addLayout(toolbar)
 
+        # 过滤 / 排序 / 批量更新
+        filters = QtWidgets.QHBoxLayout()
+        filters.setSpacing(8)
+        self.online_hide_installed = QtWidgets.QCheckBox("只看未安装")
+        self.online_hide_installed.setObjectName("filterCheck")
+        self.online_hide_installed.setCursor(Qt.PointingHandCursor)
+        self.online_hide_installed.toggled.connect(self.on_online_filter_changed)
+        filters.addWidget(self.online_hide_installed)
+        sort_label = QtWidgets.QLabel("排序")
+        sort_label.setObjectName("hint")
+        filters.addWidget(sort_label)
+        self.online_sort = QtWidgets.QComboBox()
+        self.online_sort.setObjectName("sortBox")
+        self.online_sort.addItem("最近更新", "updated")
+        self.online_sort.addItem("名称", "name")
+        self.online_sort.addItem("节点序号", "id")
+        self.online_sort.currentIndexChanged.connect(self.on_online_filter_changed)
+        filters.addWidget(self.online_sort)
+        filters.addStretch(1)
+        self.online_update_all_button = QtWidgets.QPushButton("更新全部")
+        self.online_update_all_button.setObjectName("ghostButton")
+        self.online_update_all_button.setCursor(Qt.PointingHandCursor)
+        self.online_update_all_button.setToolTip("更新所有已安装且版本较旧的插件")
+        self.online_update_all_button.clicked.connect(self.update_all_online)
+        filters.addWidget(self.online_update_all_button)
+        host_layout.addLayout(filters)
+
         self.online_empty = QtWidgets.QFrame()
         self.online_empty.setObjectName("emptyCard")
         empty_layout = QtWidgets.QVBoxLayout(self.online_empty)
@@ -1392,6 +1483,28 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.online_grid.setHorizontalSpacing(14)
         self.online_grid.setVerticalSpacing(14)
         host_layout.addWidget(self.online_grid_host)
+
+        self.online_pager = QtWidgets.QWidget()
+        pager_layout = QtWidgets.QHBoxLayout(self.online_pager)
+        pager_layout.setContentsMargins(0, 0, 0, 0)
+        pager_layout.setSpacing(8)
+        pager_layout.addStretch(1)
+        self.online_prev_button = QtWidgets.QPushButton("上一页")
+        self.online_prev_button.setObjectName("ghostButton")
+        self.online_prev_button.setCursor(Qt.PointingHandCursor)
+        self.online_prev_button.clicked.connect(lambda: self.change_online_page(-1))
+        self.online_page_label = QtWidgets.QLabel("")
+        self.online_page_label.setObjectName("hint")
+        self.online_next_button = QtWidgets.QPushButton("下一页")
+        self.online_next_button.setObjectName("ghostButton")
+        self.online_next_button.setCursor(Qt.PointingHandCursor)
+        self.online_next_button.clicked.connect(lambda: self.change_online_page(1))
+        pager_layout.addWidget(self.online_prev_button)
+        pager_layout.addWidget(self.online_page_label)
+        pager_layout.addWidget(self.online_next_button)
+        pager_layout.addStretch(1)
+        self.online_pager.setVisible(False)
+        host_layout.addWidget(self.online_pager)
 
         self.online_no_result = QtWidgets.QLabel("没有匹配的在线插件")
         self.online_no_result.setObjectName("emptyHint")
@@ -1667,7 +1780,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         else:
             for plugin in self.plugins:
                 total += 1
-                for tag in set(plugin.tags):
+                for tag in set(plugin.all_tags):
                     counts[tag] = counts.get(tag, 0) + 1
 
         # 切页后当前页没有的标签自动取消，避免一直筛出空结果
@@ -1770,19 +1883,229 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         for plugin in self.plugins:
             local_by_id[plugin.node_id_text] = plugin
 
-        for entry in self.online_entries:
+        entries = self.filtered_online_entries()
+        total = len(entries)
+        pages = max(1, (total + self.online_page_size - 1) // self.online_page_size)
+        if self.online_page_index >= pages:
+            self.online_page_index = pages - 1
+        if self.online_page_index < 0:
+            self.online_page_index = 0
+        start = self.online_page_index * self.online_page_size
+        page_entries = entries[start:start + self.online_page_size]
+
+        for entry in page_entries:
             card = OnlineCard(
                 entry, local_by_id.get(entry.node_id_text), self.online_grid_host,
                 self.install_online_entry, self.show_online_detail,
                 self.toggle_favorite, self.is_favorite(entry))
+            if entry.repo:
+                card.set_stars(self.online_stars.get(entry.repo, -1))
             self.online_cards.append(card)
             self.online_grid.addWidget(card)
 
-        has_entries = bool(self.online_entries)
-        self.online_grid_host.setVisible(has_entries)
-        self.online_empty.setVisible(not has_entries)
+        has_page = bool(page_entries)
+        self.online_grid_host.setVisible(has_page)
+        self.online_empty.setVisible(not self.online_entries)
+        self.online_no_result.setVisible(bool(self.online_entries) and not has_page)
+        if self.online_entries and not has_page:
+            self.online_no_result.setText(self.online_no_result_text())
+
+        self.online_pager.setVisible(total > self.online_page_size)
+        if total:
+            self.online_page_label.setText(
+                "第 %d / %d 页 · 共 %d 个" % (self.online_page_index + 1, pages, total))
+            self.online_prev_button.setEnabled(self.online_page_index > 0)
+            self.online_next_button.setEnabled(self.online_page_index + 1 < pages)
+
         self._reflow_online()
         self.update_online_summary()
+        self.update_update_all_button()
+
+    def filtered_online_entries(self):
+        """搜索 + 标签 + 只看未安装 + 排序，返回当前应展示的条目。"""
+        text = (self.search_box.text() or "").strip().lower()
+        local_ids = set(plugin.node_id_text for plugin in self.plugins)
+        items = []
+        hide_installed = self.online_hide_installed_check()
+        for entry in self.online_entries:
+            if hide_installed and entry.node_id_text in local_ids:
+                continue
+            if text and text not in entry.search_text():
+                continue
+            if self.active_tags and not self.active_tags.issubset(set(entry.all_tags)):
+                continue
+            items.append(entry)
+
+        if self.online_sort_key == "name":
+            items.sort(key=lambda e: (e.title or "").lower())
+        elif self.online_sort_key == "id":
+            items.sort(key=lambda e: e.node_id or 0)
+        else:
+            items.sort(key=lambda e: (e.updated or "", (e.title or "").lower()), reverse=True)
+        return items
+
+    def online_no_result_text(self):
+        if self.active_tags:
+            return "没有同时满足所选标签的插件，试试少选几个标签"
+        if self.online_hide_installed_check():
+            return "全部插件都已安装，取消「只看未安装」可以看到它们"
+        return "没有匹配的在线插件"
+
+    def on_online_filter_changed(self, *args):
+        data = self.online_sort.currentData()
+        self.online_sort_key = data or "updated"
+        self.online_page_index = 0
+        self.build_online_cards()
+
+    def online_hide_installed_check(self):
+        widget = getattr(self, "online_hide_installed", None)
+        try:
+            return bool(widget.isChecked())
+        except Exception:
+            return False
+
+    def change_online_page(self, delta):
+        self.online_page_index = max(0, self.online_page_index + delta)
+        self.build_online_cards()
+        try:
+            self.online_scroll.verticalScrollBar().setValue(0)
+        except Exception:
+            pass
+
+    def update_update_all_button(self):
+        if not hasattr(self, "online_update_all_button"):
+            return
+        local_by_id = dict((plugin.node_id_text, plugin) for plugin in self.plugins)
+        pending = 0
+        for entry in self.online_entries:
+            plugin = local_by_id.get(entry.node_id_text)
+            if plugin is None:
+                continue
+            if not online_market.supports_maya(entry, _maya_version):
+                continue
+            if online_market.is_newer(entry.version, plugin.version):
+                pending += 1
+        self.online_update_all_button.setText(
+            "更新全部（%d）" % pending if pending else "更新全部")
+        self.online_update_all_button.setEnabled(bool(pending))
+
+    def start_star_fetch(self):
+        repos = sorted(set(
+            entry.repo for entry in self.online_entries
+            if entry.repo and entry.repo not in self.online_stars))
+        if not repos:
+            return
+        worker = StarsWorker(repos)
+        self._stars_worker = worker
+        worker.done.connect(self._on_stars_loaded)
+        threading.Thread(target=worker.run, daemon=True).start()
+
+    def _on_stars_loaded(self, stars):
+        if not isinstance(stars, dict) or not stars:
+            return
+        self.online_stars.update(stars)
+        for card in list(self.online_cards):
+            if card.entry.repo in stars:
+                card.set_stars(stars[card.entry.repo])
+
+    def check_market_version(self):
+        worker = VersionWorker()
+        self._version_worker = worker
+        worker.done.connect(self._on_version_checked)
+        threading.Thread(target=worker.run, daemon=True).start()
+
+    def _on_version_checked(self, version):
+        if not version or not online_market.is_newer(version, TOOL_VERSION):
+            return
+        self.market_update_available = version
+        self.update_button.setText("更新 · v%s" % version)
+        self.update_button.setToolTip(
+            "有新版本 v%s，点这里从 GitHub 更新市场代码" % version)
+        self.notify("插件市场有新版本 v%s，可点右上角「更新」" % version, True)
+
+    def update_all_online(self):
+        local_by_id = {}
+        for plugin in self.plugins:
+            local_by_id[plugin.node_id_text] = plugin
+
+        pending = []
+        for entry in self.online_entries:
+            plugin = local_by_id.get(entry.node_id_text)
+            if plugin is None:
+                continue
+            if not online_market.supports_maya(entry, _maya_version):
+                continue
+            if online_market.is_newer(entry.version, plugin.version):
+                pending.append((entry, plugin))
+        if not pending:
+            self.notify("没有需要更新的插件", True)
+            return
+
+        lines = []
+        for entry, plugin in pending[:8]:
+            lines.append("· %s  v%s → v%s" % (
+                entry.title, plugin.version or "—", entry.version or "—"))
+        if len(pending) > 8:
+            lines.append("… 共 %d 个" % len(pending))
+        reply = QtWidgets.QMessageBox.question(
+            self, "更新全部插件",
+            "将更新 %d 个插件：\n%s\n\n每个都会先备份到 nodes/.backup。继续？" % (
+                len(pending), "\n".join(lines)),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes)
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        dialog = TaskProgressDialog(
+            "更新全部插件", "共 %d 个插件" % len(pending), self)
+        dialog.set_stage("准备更新...", 1, "")
+        dialog.show()
+        QtWidgets.QApplication.processEvents()
+
+        finished = []
+        failed = []
+        for index, (entry, plugin) in enumerate(pending, 1):
+            def report(stage, message, percent=None, detail="", i=index, e=entry):
+                dialog.set_stage(
+                    message, percent,
+                    "%s（%d/%d）\n%s" % (e.title, i, len(pending), detail))
+                QtWidgets.QApplication.processEvents()
+                if stage != "done" and dialog.was_cancelled():
+                    raise online_market.Cancelled()
+
+            try:
+                online_market.install_entry(entry, self.nodes_dir, report)
+                finished.append(entry.title)
+            except online_market.Cancelled:
+                break
+            except Exception as exc:
+                failed.append("%s：%s" % (entry.title, exc))
+
+        dialog.finish()
+        self.refresh()
+        message = "已更新 %d 个插件" % len(finished)
+        if failed:
+            message += "，%d 个失败" % len(failed)
+            cmds.warning("批量更新失败：\n" + "\n".join(failed))
+        self.notify(message, not failed)
+
+    def delete_plugin(self, plugin):
+        reply = QtWidgets.QMessageBox.question(
+            self, "删除插件",
+            "把「%s」从本地 nodes 目录移除？\n\n"
+            "会先备份到 nodes/.backup，需要时可以手动恢复。\n路径：%s" % (
+                plugin.title, plugin.folder),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No)
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            backup = online_market.backup_plugin_folder(plugin.folder, plugin.node_id_text)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "删除失败", str(exc))
+            return
+        self.refresh()
+        self.notify("%s：已移除（备份在 %s）" % (plugin.title, backup), True)
 
     def update_online_summary(self):
         if self.online_loading:
@@ -1964,6 +2287,10 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             if match:
                 visible_count += 1
         no_result.setVisible(bool(cards) and visible_count == 0)
+        if cards and visible_count == 0 and self.active_tags:
+            no_result.setText("没有同时满足所选标签的插件，试试少选几个标签")
+        elif cards and visible_count == 0:
+            no_result.setText("没有匹配的插件")
 
     def apply_filter(self, text):
         text = (text or "").strip().lower()
@@ -1972,8 +2299,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self._filter_cards(self.cards, text, self.no_result)
             self.reflow()
         elif index == 1:
-            self._filter_cards(self.online_cards, text, self.online_no_result)
-            self._reflow_online()
+            self.online_page_index = 0
+            self.build_online_cards()
         elif index == 2:
             self._filter_cards(self.favorite_cards, text, self.fav_no_result)
             self._reflow_favorites()
@@ -2133,6 +2460,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.refresh()
         elif action == "unload" and plugin is not None:
             self.unload_plugin(plugin)
+        elif action == "delete" and plugin is not None:
+            self.delete_plugin(plugin)
 
     # ------------------------------------------------------------------
     # 在线目录
@@ -2159,6 +2488,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.online_error = ""
             online_market.save_catalog_cache(CATALOG_CACHE_PATH, data)
             self.build_online_cards()
+            self.start_star_fetch()
             self.build_favorites()
             if self.stack.currentIndex() == 1:
                 self.build_tag_bar("online")
