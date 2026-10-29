@@ -605,6 +605,33 @@ class VersionWorker(QtCore.QObject):
         self.done.emit(version)
 
 
+class MarketUpdateWorker(QtCore.QObject):
+    """后台下载/覆盖市场代码，界面在主线程里更新，不会再白屏。"""
+
+    progress = QtCore.Signal(str, object, str)
+    done = QtCore.Signal(bool, object, str)
+
+    def __init__(self, task, cancel_event):
+        super(MarketUpdateWorker, self).__init__()
+        self._task = task
+        self._cancel = cancel_event
+
+    def run(self):
+        def report(stage, message, percent=None, detail=""):
+            self.progress.emit(message, percent, detail)
+            if self._cancel.is_set():
+                raise online_market.Cancelled()
+
+        try:
+            copied = self._task(report)
+        except online_market.Cancelled:
+            self.done.emit(False, None, "cancelled")
+        except Exception as exc:
+            self.done.emit(False, None, str(exc))
+        else:
+            self.done.emit(True, copied, "")
+
+
 class OnlineCard(QtWidgets.QFrame):
     def __init__(self, entry, installed, parent, on_install, on_detail,
                  on_favorite, is_favorite=False):
@@ -1249,6 +1276,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.online_sort_key = "updated"
         self.online_stars = {}
         self._stars_worker = None
+        self._update_worker = None
+        self._update_cancel = None
         self.market_update_available = ""
         self.scene_hook_ids = []
         self.scene_save_id = None
@@ -2697,30 +2726,33 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             return
 
         dialog = TaskProgressDialog("更新插件市场", "节点插件市场", self)
-        dialog.set_stage("准备从 GitHub 下载市场更新包...", 1, MARKET_GITHUB_URL)
+        dialog.set_stage("准备从 GitHub 下载市场更新包...", None, MARKET_GITHUB_URL)
         dialog.show()
         QtWidgets.QApplication.processEvents()
 
-        def report(stage, message, percent=None, detail=""):
-            dialog.set_stage(message, percent, detail)
-            QtWidgets.QApplication.processEvents()
-            if stage != "done" and dialog.was_cancelled():
-                raise online_market.Cancelled()
+        self._update_cancel = threading.Event()
+        dialog.cancel_button.clicked.connect(self._update_cancel.set)
 
-        try:
-            copied = self._download_market_update(report)
-        except online_market.Cancelled:
-            dialog.finish()
+        worker = MarketUpdateWorker(self._download_market_update, self._update_cancel)
+        self._update_worker = worker
+        worker.progress.connect(dialog.set_stage)
+        worker.done.connect(
+            lambda ok, copied, error: self._on_market_update_done(
+                dialog, ok, copied, error))
+        threading.Thread(target=worker.run, daemon=True).start()
+
+    def _on_market_update_done(self, dialog, ok, copied, error):
+        dialog.finish()
+        self._update_worker = None
+        self._update_cancel = None
+        if error == "cancelled":
             self.notify("已取消市场更新", False)
             return
-        except Exception as exc:
-            dialog.finish()
+        if not ok:
             QtWidgets.QMessageBox.warning(
-                self, "更新失败", "无法从 GitHub 下载更新：\n%s" % exc)
-            cmds.warning("插件市场更新失败：%s" % exc)
+                self, "更新失败", "无法从 GitHub 下载更新：\n%s" % error)
+            cmds.warning("插件市场更新失败：%s" % error)
             return
-        dialog.finish()
-
         self.notify("市场已更新：%s" % ", ".join(copied), True)
         QtWidgets.QMessageBox.information(
             self, "更新完成",
