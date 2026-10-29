@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.5"
+TOOL_VERSION = "3.1.6"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -794,6 +794,25 @@ def pump_events():
             QtWidgets.QApplication.processEvents(flags)
     except Exception:
         pass
+
+
+# 后台线程注册表：线程不挂在窗口下面，窗口被销毁时不会连带销毁还在运行的
+# QThread（Qt 对这种情况会 qFatal 直接中止进程）。
+_BG_THREADS = set()
+
+
+def keep_thread(thread):
+    """让线程脱离窗口生命周期，结束后自动解除引用。"""
+    _BG_THREADS.add(thread)
+
+    def _drop():
+        try:
+            _BG_THREADS.discard(thread)
+        except Exception:
+            pass
+
+    thread.finished.connect(_drop)
+    return thread
 
 
 def open_url(url):
@@ -2258,17 +2277,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # 兜底：万一无边框标志被别处重置，补回来并重新显示一次。
-        if not (self.windowFlags() & Qt.FramelessWindowHint):
-            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-            QtCore.QTimer.singleShot(0, self._safe_show)
-
-    def _safe_show(self):
-        try:
-            if not self.isVisible():
-                self.show()
-        except Exception:
-            pass
+        # 这里不再改 windowFlags：setWindowFlags 会先隐藏窗口再显示，
+        # 表现就是「打开插件时闪一下」。无边框已在 _makeMayaStandaloneWindow
+        # 里一次设好，显示过程中不动窗口标志。
 
     def _edge_at(self, pos):
         # 返回鼠标所在的边缘/角，用于无边框窗口缩放；最大化时禁用缩放
@@ -3239,16 +3250,15 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         return thread
 
     def _stop_threads(self):
-        """让后台线程收尾后再关窗。
+        """关窗时让后台线程收尾，但绝不阻塞界面。
 
-        QThread 仍在运行时被销毁，Qt 会 qFatal 直接中止进程，
-        表现就是 Maya 弹出 Autodesk 错误报告。
+        线程不再挂在窗口下面，即使还有网络请求没返回，窗口关闭/销毁也不会
+        连带销毁运行中的 QThread；这里只发退出请求，等它们自己结束。
         """
         for thread in list(getattr(self, "_bg_threads", []) or []):
             try:
                 if thread.isRunning():
                     thread.quit()
-                    thread.wait(3000)
             except Exception:
                 continue
         self._bg_threads = []
@@ -3267,7 +3277,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not repos:
             return
         worker = StarsWorker(repos)
-        thread = QtCore.QThread(self)
+        thread = keep_thread(QtCore.QThread())
         worker.moveToThread(thread)
         worker.done.connect(self._on_stars_loaded)
         worker.done.connect(thread.quit)
@@ -3290,7 +3300,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def check_market_version(self):
         self._version_checked_at = time.time()
         worker = VersionWorker()
-        thread = QtCore.QThread(self)
+        thread = keep_thread(QtCore.QThread())
         worker.moveToThread(thread)
         worker.done.connect(self._on_version_checked)
         worker.done.connect(thread.quit)
@@ -3851,7 +3861,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not self.online_entries:
             self.online_empty.setVisible(True)
         worker = CatalogWorker()
-        thread = QtCore.QThread(self)
+        thread = keep_thread(QtCore.QThread())
         worker.moveToThread(thread)
         worker.done.connect(self._on_catalog_loaded)
         worker.done.connect(thread.quit)
@@ -3978,7 +3988,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         dialog.cancel_button.clicked.connect(self._update_cancel.set)
 
         worker = MarketUpdateWorker(self._download_market_update, self._update_cancel)
-        thread = QtCore.QThread(self)
+        thread = keep_thread(QtCore.QThread())
         worker.moveToThread(thread)
         worker.progress.connect(dialog.set_stage)
         worker.done.connect(
@@ -4603,7 +4613,7 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
         row["status"].setText(u"正在通过 pip 安装 %s…" % dep["pip_name"])
         row["status"].setStyleSheet("color:#cfe0ff;")
 
-        thread = QtCore.QThread(self)
+        thread = keep_thread(QtCore.QThread())
         worker = _InstallWorker(dep["pip_name"])
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -4704,7 +4714,19 @@ class WindowHandle(object):
         self._window = None
 
     def show(self):
-        # 启动前先做一次环境检查；缺失依赖会弹出对话框，
+        # 先看有没有已经建好的窗口：有就直接显示，不再做环境检查、
+        # 不再重建界面。这样重复点击工具架按钮是「秒开」，也不会闪。
+        # 注意：不要用 sendPostedEvents(None, DeferredDelete) 清理旧窗口，
+        # 那会冲刷整个应用的延迟删除队列，把 Maya 自身 UI 提前删掉导致段错误。
+        window = find_existing_window()
+        if window is not None:
+            window.show()
+            self._window = window
+            window.raise_()
+            window.activateWindow()
+            return window
+
+        # 只有真正要新建窗口时才做环境检查；缺失依赖会弹出对话框，
         # 必需依赖未安装时用户无法继续，可选依赖仅提示不阻塞。
         # 用户勾选过「忽略可选依赖」后，如果当前缺失全是可选的，
         # 直接跳过对话框进入主窗口。
@@ -4716,22 +4738,14 @@ class WindowHandle(object):
                 dlg = EnvironmentCheckDialog(missing)
                 if dlg.exec_() != QtWidgets.QDialog.Accepted:
                     return None
-        # 注意：不要用 sendPostedEvents(None, DeferredDelete) 清理旧窗口。
-        # 那会冲刷整个应用的延迟删除队列，把 Maya 自身 UI（大纲视图、
-        # 属性编辑器等）还没轮到销毁的控件提前删掉，导致段错误。
-        # find_existing_window 内部已按 RuntimeError 跳过已销毁的包装对象。
-        window = find_existing_window()
-        if window is None:
-            # 清掉旧版停靠窗口留下的 workspaceControl，避免重名
-            try:
-                if cmds.workspaceControl(WORKSPACE_CONTROL, query=True, exists=True):
-                    cmds.deleteUI(WORKSPACE_CONTROL)
-            except Exception:
-                pass
-            window = MarketWindow()
-            window.show()
-        else:
-            window.show()
+        # 清掉旧版停靠窗口留下的 workspaceControl，避免重名
+        try:
+            if cmds.workspaceControl(WORKSPACE_CONTROL, query=True, exists=True):
+                cmds.deleteUI(WORKSPACE_CONTROL)
+        except Exception:
+            pass
+        window = MarketWindow()
+        window.show()
         self._window = window
         window.raise_()
         window.activateWindow()
