@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.4"
+TOOL_VERSION = "3.1.5"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -778,6 +778,22 @@ def exec_dialog(dialog):
     handler = getattr(dialog, "exec", None) or getattr(dialog, "exec_", None)
     if handler is not None:
         return handler()
+
+
+def pump_events():
+    """安装/更新过程中泵事件：只处理绘制和定时器，屏蔽用户输入。
+
+    直接 processEvents() 会让用户在安装途中点击别的卡片，重入安装流程、
+    销毁正在使用的对话框，这是窗口崩溃的来源之一。
+    """
+    flags = getattr(QtCore.QEventLoop, "ExcludeUserInputEvents", None)
+    try:
+        if flags is None:
+            QtWidgets.QApplication.processEvents()
+        else:
+            QtWidgets.QApplication.processEvents(flags)
+    except Exception:
+        pass
 
 
 def open_url(url):
@@ -2011,6 +2027,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._update_cancel = None
         self.market_update_available = ""
         self._version_checked_at = 0.0
+        # 后台线程登记表：关闭窗口前统一 quit + wait，
+        # 避免 QThread 还在运行时被销毁（Qt 会直接中止进程）。
+        self._bg_threads = []
         self.scene_hook_ids = []
         self.scene_save_id = None
         self._scene_prompted = set()
@@ -3197,6 +3216,50 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             "更新全部（%d）" % pending if pending else "更新全部")
         self.online_update_all_button.setEnabled(bool(pending))
 
+    def _track_thread(self, thread, *attributes):
+        """登记后台线程，结束后自动解除引用；关窗时由 _stop_threads 统一收尾。"""
+        if not isinstance(getattr(self, "_bg_threads", None), list):
+            self._bg_threads = []
+        self._bg_threads.append(thread)
+
+        def _cleanup():
+            try:
+                if thread in self._bg_threads:
+                    self._bg_threads.remove(thread)
+            except Exception:
+                pass
+            for name in attributes:
+                try:
+                    if getattr(self, name, None) is thread:
+                        setattr(self, name, None)
+                except Exception:
+                    pass
+
+        thread.finished.connect(_cleanup)
+        return thread
+
+    def _stop_threads(self):
+        """让后台线程收尾后再关窗。
+
+        QThread 仍在运行时被销毁，Qt 会 qFatal 直接中止进程，
+        表现就是 Maya 弹出 Autodesk 错误报告。
+        """
+        for thread in list(getattr(self, "_bg_threads", []) or []):
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(3000)
+            except Exception:
+                continue
+        self._bg_threads = []
+        for name in ("_catalog_thread", "_stars_thread", "_version_thread",
+                     "_update_thread", "_catalog_worker", "_stars_worker",
+                     "_version_worker", "_update_worker"):
+            try:
+                setattr(self, name, None)
+            except Exception:
+                pass
+
     def start_star_fetch(self):
         repos = sorted(set(
             entry.repo for entry in self.online_entries
@@ -3213,6 +3276,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         thread.started.connect(worker.run)
         self._stars_worker = worker
         self._stars_thread = thread
+        self._track_thread(thread, "_stars_thread")
         thread.start()
 
     def _on_stars_loaded(self, stars):
@@ -3235,6 +3299,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         thread.started.connect(worker.run)
         self._version_worker = worker
         self._version_thread = thread
+        self._track_thread(thread, "_version_thread")
         thread.start()
 
     def _maybe_check_version(self, interval=300):
@@ -3308,7 +3373,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             "更新全部插件", "共 %d 个插件" % len(pending), self)
         dialog.set_stage("准备更新...", 1, "")
         dialog.show()
-        QtWidgets.QApplication.processEvents()
+        pump_events()
 
         finished = []
         failed = []
@@ -3317,7 +3382,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 dialog.set_stage(
                     message, percent,
                     "%s（%d/%d）\n%s" % (e.title, i, len(pending), detail))
-                QtWidgets.QApplication.processEvents()
+                pump_events()
                 if stage != "done" and dialog.was_cancelled():
                     raise online_market.Cancelled()
 
@@ -3795,6 +3860,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         thread.started.connect(worker.run)
         self._catalog_worker = worker
         self._catalog_thread = thread
+        self._track_thread(thread, "_catalog_thread")
         thread.start()
 
     def _on_catalog_loaded(self, ok, data, error):
@@ -3866,11 +3932,11 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 entry.node_name, entry.node_id_text, entry.repo,
                 ("/" + entry.subpath) if entry.subpath else ""))
         dialog.show()
-        QtWidgets.QApplication.processEvents()
+        pump_events()
 
         def report(stage, message, percent=None, detail=""):
             dialog.set_stage(message, percent, detail)
-            QtWidgets.QApplication.processEvents()
+            pump_events()
             if stage != "done" and dialog.was_cancelled():
                 raise online_market.Cancelled()
 
@@ -3906,7 +3972,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         dialog = TaskProgressDialog("更新插件市场", "节点插件市场", self)
         dialog.set_stage("准备从 GitHub 下载市场更新包...", None, MARKET_GITHUB_URL)
         dialog.show()
-        QtWidgets.QApplication.processEvents()
+        pump_events()
 
         self._update_cancel = threading.Event()
         dialog.cancel_button.clicked.connect(self._update_cancel.set)
@@ -3924,6 +3990,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         thread.started.connect(worker.run)
         self._update_worker = worker
         self._update_thread = thread
+        self._track_thread(thread, "_update_thread")
         thread.start()
 
     def _on_market_update_done(self, dialog, ok, copied, error):
@@ -4104,7 +4171,22 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def on_scene_opened(self, *args):
         if self._scene_reopen_guard:
             return
-        QtCore.QTimer.singleShot(600, lambda: self.check_scene_requirements(auto=True))
+        # 文件打开回调里不能直接弹窗：Maya 这时还在收尾，模态对话框
+        # 会让它重入。这里先排进 Maya 的空闲队列，再确认场景没被切换。
+        scene = scene_requirements.current_scene()
+
+        def _deferred():
+            if self._scene_reopen_guard:
+                return
+            if scene_requirements.current_scene() != scene:
+                return
+            QtCore.QTimer.singleShot(
+                300, lambda: self.check_scene_requirements(auto=True))
+
+        try:
+            cmds.evalDeferred(_deferred, lowestPriority=True)
+        except Exception:
+            QtCore.QTimer.singleShot(600, lambda: self.check_scene_requirements(auto=True))
 
     def on_scene_check_toggled(self, checked):
         self.scene_check = bool(checked)
@@ -4135,6 +4217,13 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
     def check_scene_requirements(self, auto=True):
         if auto and not self.scene_check:
+            return
+        # 已经有模态对话框（例如正在安装）时不要叠加，隔一会儿再试，
+        # 否则会形成嵌套模态，安装中途弹窗是崩溃的高发路径。
+        if QtWidgets.QApplication.activeModalWidget() is not None:
+            if auto:
+                QtCore.QTimer.singleShot(
+                    2000, lambda: self.check_scene_requirements(auto=True))
             return
         missing = scene_requirements.missing_plugins()
         requirement_ids = scene_requirements.requirement_node_ids()
@@ -4184,7 +4273,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             "安装场景所需插件", "共 %d 个插件" % len(entries), self)
         dialog.set_stage("准备安装...", 1, "")
         dialog.show()
-        QtWidgets.QApplication.processEvents()
+        pump_events()
 
         failed = []
         for index, entry in enumerate(entries, 1):
@@ -4192,7 +4281,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 dialog.set_stage(
                     message, percent,
                     "%s（%d/%d）\n%s" % (e.title, i, len(entries), detail))
-                QtWidgets.QApplication.processEvents()
+                pump_events()
                 if stage != "done" and dialog.was_cancelled():
                     raise online_market.Cancelled()
 
@@ -4255,6 +4344,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         self.unregister_scene_hook()
+        self._stop_threads()
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -4626,11 +4716,10 @@ class WindowHandle(object):
                 dlg = EnvironmentCheckDialog(missing)
                 if dlg.exec_() != QtWidgets.QDialog.Accepted:
                     return None
-        # 先处理掉待删除的旧窗口，避免复用一个马上会被销毁的实例
-        try:
-            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
-        except Exception:
-            pass
+        # 注意：不要用 sendPostedEvents(None, DeferredDelete) 清理旧窗口。
+        # 那会冲刷整个应用的延迟删除队列，把 Maya 自身 UI（大纲视图、
+        # 属性编辑器等）还没轮到销毁的控件提前删掉，导致段错误。
+        # find_existing_window 内部已按 RuntimeError 跳过已销毁的包装对象。
         window = find_existing_window()
         if window is None:
             # 清掉旧版停靠窗口留下的 workspaceControl，避免重名
