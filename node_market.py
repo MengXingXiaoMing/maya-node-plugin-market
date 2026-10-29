@@ -41,10 +41,18 @@ import maya.mel as mel
 
 MAYA_NODE_ID_URL = "https://adn.autodesk.io/maya"
 DEFAULT_GITHUB_URL = "https://github.com/MengXingXiaoMing"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 META_NAMES = ("NODE_INFO", "NODE_META", "PLUGIN_INFO", "__NODE_INFO__", "__NODE_META__")
 FOLDER_ID_RE = re.compile(r"^(0[xX][0-9a-fA-F]{1,8}|[0-9]{1,10})$")
+CATEGORY_LABELS = {
+    "rigging": "绑定",
+    "workflow": "工作流",
+    "window": "窗口与界面",
+    "animation": "动画",
+    "modeling": "建模",
+    "utility": "实用工具",
+}
 
 try:
     STRING_TYPES = (basestring,)  # noqa: F821  (Python 2)
@@ -234,6 +242,7 @@ class NodePlugin(object):
         self.node_names = []
         self.commands = []
         self.tags = []
+        self.category = ""
         self.run = ""
         self.icon = ""
         self.github = ""
@@ -250,8 +259,18 @@ class NodePlugin(object):
     def search_text(self):
         return " ".join([
             self.title, self.description, self.author, self.node_name,
-            self.node_id_text, " ".join(self.tags), " ".join(self.commands),
+            self.node_id_text, " ".join(self.all_tags), " ".join(self.commands),
         ]).lower()
+
+    @property
+    def all_tags(self):
+        """标签栏和过滤统一用这个：分类在前，自定义标签在后。"""
+        label = CATEGORY_LABELS.get(self.category, self.category)
+        result = [label] if label else []
+        for tag in self.tags:
+            if tag and tag not in result:
+                result.append(tag)
+        return result
 
     def is_loaded(self):
         return plugin_loaded(self.path)
@@ -262,8 +281,8 @@ class NodePlugin(object):
     def to_dict(self):
         fields = (
             "path", "folder", "folder_id", "title", "description", "author", "version",
-            "node_name", "node_id", "node_names", "commands", "tags", "run", "icon",
-            "github", "plugin_name",
+            "node_name", "node_id", "node_names", "commands", "tags", "category", "run",
+            "icon", "github", "plugin_name",
         )
         data = {}
         for name in fields:
@@ -482,6 +501,7 @@ def parse_plugin_file(path, folder_id=None):
             or (doc or "").strip()
         item.run = to_text(meta.get("run")).strip()
         item.github = to_text(meta.get("github") or meta.get("homepage")).strip()
+        item.category = to_text(meta.get("category")).strip()
         tags = meta.get("tags") or []
         if isinstance(tags, STRING_TYPES):
             tags = [tags]
