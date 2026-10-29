@@ -7,7 +7,8 @@
 - 识别到节点注册就生成一张插件卡片和启动按钮；
 - 卡片悬停显示作者写在 NODE_INFO 里的详情。
 
-入口保持 window.show() 不变，旧的架子按钮/菜单命令仍然可用。
+入口：install.py 是唯一的安装/启动文件（创建架子按钮并打开窗口）；
+本模块保持 window.show() 不变，旧的架子按钮/菜单命令仍然可用。
 """
 
 from __future__ import absolute_import, unicode_literals
@@ -17,6 +18,7 @@ import inspect
 import io
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -67,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "2.9"
+TOOL_VERSION = "3.0"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -82,7 +84,6 @@ UPDATE_FILES = (
     "online_market.py",
     "scene_requirements.py",
     "install.py",
-    "open_window.py",
     "custom_commands_lcon.png",
 )
 SETTINGS_PATH = os.path.join(FILE_DIR, "market_settings.json")
@@ -92,7 +93,200 @@ CATALOG_CACHE_PATH = os.path.join(FILE_DIR, "market_catalog_cache.json")
 ICON_PATH = os.path.join(FILE_DIR, "custom_commands_lcon.png")
 DEFAULT_NODES_DIR = os.path.join(FILE_DIR, "nodes")
 
+# ---------------------------------------------------------------------------
+# 启动环境检查
+# 启动时校验运行所需的 Python 包；缺失的会弹出环境检查对话框，
+# 支持一键自动安装（调用当前 Maya 的 mayapy -m pip）和手动下载链接。
+# required=True 的依赖缺失会阻塞启动，required=False 仅提示不阻塞。
+# ---------------------------------------------------------------------------
+ENV_DEPENDENCIES = (
+    {
+        "import_name": "PySide6",
+        "pip_name": "PySide6",
+        "display": u"PySide6（Qt 界面）",
+        "required": True,
+        "description": u"Maya 2025+ 自带，用于绘制市场窗口界面。",
+        "download_url": "https://pypi.org/project/PySide6/",
+    },
+    {
+        "import_name": "PySide2",
+        "pip_name": "PySide2",
+        "display": u"PySide2（Qt 界面）",
+        "required": True,
+        "description": u"Maya 2022-2024 自带，用于绘制市场窗口界面。",
+        "download_url": "https://pypi.org/project/PySide2/",
+    },
+    {
+        "import_name": "requests",
+        "pip_name": "requests",
+        "display": u"requests（在线市场）",
+        "required": False,
+        "description": u"推荐安装，用于更稳定地访问在线插件目录；缺失时自动使用内置 urllib。",
+        "download_url": "https://pypi.org/project/requests/",
+    },
+)
+
+
+def _try_import(name):
+    """尝试导入模块，成功返回 True。"""
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+
+def check_environment():
+    """返回缺失的依赖列表。
+
+    PySide6/PySide2 同属 Qt 界面家族，只要有一个可用就算通过；
+    两者都缺失时只返回 PySide6 这一条（避免两条重复提示）。
+    """
+    missing = []
+    pyside_ok = _try_import("PySide6") or _try_import("PySide2")
+    pyside_reported = False
+    for dep in ENV_DEPENDENCIES:
+        if dep["import_name"] in ("PySide6", "PySide2"):
+            if pyside_ok:
+                continue
+            if pyside_reported:
+                continue
+            # 两者都缺失：只加 PySide6 这一条（Maya 2025+ 推荐）
+            missing.append(next(d for d in ENV_DEPENDENCIES if d["import_name"] == "PySide6"))
+            pyside_reported = True
+            continue
+        if not _try_import(dep["import_name"]):
+            missing.append(dep)
+    return missing
+
+
+def pip_install_package(pip_name):
+    """用当前 Maya 的解释器执行 pip install，返回 (success, output)。"""
+    mayapy = sys.executable
+    if not mayapy:
+        return False, u"找不到 Maya Python 解释器。"
+    try:
+        proc = subprocess.Popen(
+            [mayapy, "-m", "pip", "install", pip_name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        out, _ = proc.communicate()
+        try:
+            text = out.decode("utf-8", errors="replace")
+        except Exception:
+            text = str(out)
+        return proc.returncode == 0, text
+    except Exception as exc:
+        return False, u"调用 pip 失败：%s" % exc
+
+
+# ---------------------------------------------------------------------------
+# 多用户数据隔离
+# 节点插件(nodes/)、解析缓存(market_cache.json)、在线目录缓存 保持共享；
+# 个人设置(market_settings.json)、收藏(market_state.json) 按用户名隔离，
+# 存放在 FILE_DIR/user_data/<用户名>/ 下。
+# 本地登录信息（自动登录用户名）存放在系统当前用户的应用数据目录。
+# ---------------------------------------------------------------------------
+USER_DATA_ROOT = os.path.join(FILE_DIR, "user_data")
+
+
+def _local_login_path():
+    """本地登录信息文件路径（系统当前用户私有，用于自动登录）。"""
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(appdata, "ZKMNodeMarket", "login.json")
+
+
+def _default_user_name():
+    return os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+
+
+def _sanitize_user_name(name):
+    """把用户名转成可用于目录名的安全字符串。"""
+    name = (name or "").strip()
+    safe = "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
+    return safe.strip() or "user"
+
+
+_CURRENT_USER = None
+
+
+def get_current_user():
+    """返回当前登录的用户名；若没有自动登录记录则返回 None。"""
+    global _CURRENT_USER
+    if _CURRENT_USER:
+        return _CURRENT_USER
+    try:
+        with io.open(_local_login_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and data.get("auto_login") and data.get("user"):
+            _CURRENT_USER = _sanitize_user_name(data["user"])
+            return _CURRENT_USER
+    except Exception:
+        pass
+    return None
+
+
+def set_current_user(name, auto_login=False):
+    """设置当前用户并写入本地登录信息；同时确保其个人数据目录存在。"""
+    global _CURRENT_USER
+    _CURRENT_USER = _sanitize_user_name(name)
+    try:
+        folder = os.path.dirname(_local_login_path())
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with io.open(_local_login_path(), "w", encoding="utf-8") as handle:
+            json.dump(
+                {"user": _CURRENT_USER, "auto_login": bool(auto_login)},
+                handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        cmds.warning("保存登录信息失败：%s" % exc)
+    user_dir = os.path.join(USER_DATA_ROOT, _CURRENT_USER)
+    if not os.path.isdir(user_dir):
+        try:
+            os.makedirs(user_dir)
+        except Exception:
+            pass
+    return _CURRENT_USER
+
+
+def user_dir(name=None):
+    name = _sanitize_user_name(name) if name else (get_current_user() or _default_user_name())
+    return os.path.join(USER_DATA_ROOT, name)
+
+
+def user_settings_path():
+    return os.path.join(user_dir(), "settings.json")
+
+
+def user_state_path():
+    return os.path.join(user_dir(), "state.json")
+
+
+def _migrate_shared_to_user(name):
+    """首次登录时，把旧版共享的 settings/state 复制给该用户作为初始数据。"""
+    target_dir = user_dir(name)
+    if not os.path.isdir(target_dir):
+        try:
+            os.makedirs(target_dir)
+        except Exception:
+            pass
+    for shared, per_user in ((SETTINGS_PATH, user_settings_path()),
+                             (STATE_PATH, user_state_path())):
+        if os.path.isfile(shared) and not os.path.isfile(per_user):
+            try:
+                import shutil
+                shutil.copyfile(shared, per_user)
+            except Exception:
+                pass
+
+
 COLORS = ["#4a86e8", "#8a6cf0", "#2fa79a", "#d08a3e", "#c95f7c", "#5a8fb8"]
+
+# 卡片固定宽度与网格间距：用于计算响应式列数（最高支持 6 列）
+CARD_WIDTH = 280
+GRID_SPACING = 14
+GRID_MARGIN = 44
+MAX_COLUMNS = 6
 
 QSS = """
 QMainWindow, #marketRoot { background: #1f2126; }
@@ -100,6 +294,18 @@ QMainWindow, #marketRoot { background: #1f2126; }
 #appTitle { color: #f2f4f8; font-size: 23px; font-weight: 700; }
 #appSubtitle { color: #9aa1ad; font-size: 12px; }
 #appAuthor { color: #8f96a2; font-size: 11px; }
+QPushButton#winCtrl {
+    background: transparent; border: none; border-radius: 6px;
+    color: #9aa1ad; font-size: 13px; padding: 0px;
+    min-width: 30px; min-height: 24px;
+}
+QPushButton#winCtrl:hover { background: #34373f; color: #e8eaf0; }
+QPushButton#winClose {
+    background: transparent; border: none; border-radius: 6px;
+    color: #9aa1ad; font-size: 13px; padding: 0px;
+    min-width: 30px; min-height: 24px;
+}
+QPushButton#winClose:hover { background: #e81123; color: white; }
 #badge {
     background: rgba(91, 157, 255, 0.14); color: #9cc4ff;
     border: 1px solid rgba(91, 157, 255, 0.35);
@@ -253,6 +459,29 @@ QDialog#detailDialog { background: #22242a; }
 }
 #fieldLabel { color: #8b93a0; font-size: 11px; }
 #fieldValue { color: #dfe3ea; font-size: 12px; }
+
+QDialog#envDialog { background: #1f2126; }
+#envHeader { background: #24262c; border-bottom: 1px solid #34373f; }
+#envTitle { color: #f2f4f8; font-size: 15px; font-weight: 600; }
+#envTip { color: #9aa1ad; font-size: 12px; }
+#envRow {
+    background: #272a30; border: 1px solid #343842; border-radius: 8px;
+}
+#envRowTitle { color: #eef1f6; font-size: 13px; font-weight: 600; }
+#envRowDesc { color: #9aa1ad; font-size: 11px; }
+#envRowStatus { font-size: 11px; }
+QPushButton#envInstall {
+    background: #4a86e8; color: white; border: none; border-radius: 6px;
+    padding: 5px 14px; font-size: 12px; font-weight: 600;
+}
+QPushButton#envInstall:hover { background: #5b94f0; }
+QPushButton#envInstall:pressed { background: #3d73c9; }
+QPushButton#envInstall:disabled { background: #3a3e47; color: #7e8592; }
+QPushButton#envDl {
+    background: transparent; color: #aab1bd; border: 1px solid #3a3e48;
+    border-radius: 6px; padding: 5px 12px; font-size: 12px;
+}
+QPushButton#envDl:hover { background: #2c3038; color: #e6e9ef; border-color: #4a4f5b; }
 """
 
 
@@ -264,9 +493,10 @@ def load_settings():
         "nodes_dir": DEFAULT_NODES_DIR,
         "github_url": MARKET_GITHUB_URL,
         "scene_check": True,
+        "skip_env_optional": False,
     }
     try:
-        with io.open(SETTINGS_PATH, "r", encoding="utf-8") as handle:
+        with io.open(user_settings_path(), "r", encoding="utf-8") as handle:
             data = json.load(handle)
         if isinstance(data, dict):
             for key, value in data.items():
@@ -284,7 +514,11 @@ def load_settings():
 
 def save_settings(data):
     try:
-        with io.open(SETTINGS_PATH, "w", encoding="utf-8") as handle:
+        path = user_settings_path()
+        folder = os.path.dirname(path)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with io.open(path, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(data, ensure_ascii=False, indent=2))
         return True
     except Exception as exc:
@@ -295,7 +529,7 @@ def save_settings(data):
 def load_state():
     default = {"favorites": []}
     try:
-        with io.open(STATE_PATH, "r", encoding="utf-8") as handle:
+        with io.open(user_state_path(), "r", encoding="utf-8") as handle:
             data = json.load(handle)
         if isinstance(data, dict):
             favorites = data.get("favorites") or []
@@ -308,7 +542,11 @@ def load_state():
 
 def save_state(data):
     try:
-        with io.open(STATE_PATH, "w", encoding="utf-8") as handle:
+        path = user_state_path()
+        folder = os.path.dirname(path)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with io.open(path, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(data, ensure_ascii=False, indent=2))
         return True
     except Exception as exc:
@@ -401,7 +639,7 @@ class PluginCard(QtWidgets.QFrame):
         self._hovered = False
 
         self.setObjectName("pluginCard")
-        self.setFixedWidth(320)
+        self.setFixedWidth(CARD_WIDTH)
         self.setMinimumHeight(190)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -646,7 +884,7 @@ class OnlineCard(QtWidgets.QFrame):
         self._hovered = False
 
         self.setObjectName("pluginCard")
-        self.setFixedWidth(320)
+        self.setFixedWidth(CARD_WIDTH)
         self.setMinimumHeight(216)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1240,6 +1478,26 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.resize(1080, 700)
         self.setMinimumSize(720, 520)
 
+        # 无边框：用自定义标题栏统一深色风格，避免原生浅色标题栏与暗色 UI 割裂
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+        self.setMouseTracking(True)
+        self._dragging = False
+        self._drag_pos = QtCore.QPoint()
+        self._resize_mode = None
+        self._resize_start_geom = None
+        self._resize_start_pos = None
+        self._resize_margin = 8
+
+        # 登录：有自动登录记录则直接使用，否则弹窗让用户填写个人名称
+        user = get_current_user()
+        if not user:
+            name, auto_login = self._prompt_login()
+            user = set_current_user(name, auto_login)
+            _migrate_shared_to_user(user)
+        else:
+            _migrate_shared_to_user(user)
+        self.user_name = user
+
         settings = load_settings()
         self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
         self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
@@ -1353,6 +1611,30 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         title_row.addWidget(self.update_button)
         title_row.addWidget(self.refresh_button)
         title_row.addWidget(self.clear_cache_button)
+
+        # 窗口控制按钮（自定义标题栏）
+        sep = QtWidgets.QFrame()
+        sep.setFixedSize(1, 18)
+        sep.setStyleSheet("background: #3a3e48;")
+        title_row.addWidget(sep, 0, Qt.AlignVCenter)
+        self.min_button = QtWidgets.QPushButton("\u2013")
+        self.min_button.setObjectName("winCtrl")
+        self.min_button.setCursor(Qt.PointingHandCursor)
+        self.min_button.setToolTip("最小化")
+        self.min_button.clicked.connect(self.showMinimized)
+        self.max_button = QtWidgets.QPushButton("\u25a1")
+        self.max_button.setObjectName("winCtrl")
+        self.max_button.setCursor(Qt.PointingHandCursor)
+        self.max_button.setToolTip("最大化")
+        self.max_button.clicked.connect(self._toggle_maximize)
+        self.close_button = QtWidgets.QPushButton("\u2715")
+        self.close_button.setObjectName("winClose")
+        self.close_button.setCursor(Qt.PointingHandCursor)
+        self.close_button.setToolTip("关闭")
+        self.close_button.clicked.connect(self.close)
+        title_row.addWidget(self.min_button)
+        title_row.addWidget(self.max_button)
+        title_row.addWidget(self.close_button)
         header_layout.addLayout(title_row)
 
         subtitle = QtWidgets.QLabel(
@@ -1455,6 +1737,262 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         outer.addWidget(status)
 
         self.setStyleSheet(QSS)
+
+    # ------------------------------------------------------------------
+    # 自定义标题栏：拖动 / 双击最大化 / 状态同步
+    # ------------------------------------------------------------------
+    def _header_widget(self):
+        return self.findChild(QtWidgets.QFrame, "header")
+
+    def _in_header(self, pos):
+        header = self._header_widget()
+        if header is None:
+            return False
+        top_left = header.mapTo(self, QtCore.QPoint(0, 0))
+        rect = QtCore.QRect(top_left, header.size())
+        return rect.contains(pos)
+
+    def _makeMayaStandaloneWindow(self):
+        # MayaQWidgetDockableMixin.show() 在窗口首次显示且 parent() 为 None 时，
+        # 会调用本方法把窗口 reparent 到 Maya 主窗口，并对非 QDockWidget 的窗口
+        # 直接执行 setWindowFlags(Qt.Window)——这会把 __init__ 里设置的
+        # FramelessWindowHint 整个清掉，且 setWindowFlags 会顺带隐藏窗口。
+        # 这里在调用完父类逻辑后立即把无边框标志加回来，保证第一次 setVisible(True)
+        # 时窗口就是无边框的，避免走 showEvent 里改标志→隐藏→再显示的不可靠路径。
+        super(MarketWindow, self)._makeMayaStandaloneWindow()
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+
+    def showEvent(self, event):
+        super(MarketWindow, self).showEvent(event)
+        # 兜底：万一无边框标志被别处重置，补回来并重新显示一次。
+        if not (self.windowFlags() & Qt.FramelessWindowHint):
+            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+            QtCore.QTimer.singleShot(0, self._safe_show)
+
+    def _safe_show(self):
+        try:
+            if not self.isVisible():
+                self.show()
+        except Exception:
+            pass
+
+    def _edge_at(self, pos):
+        # 返回鼠标所在的边缘/角，用于无边框窗口缩放；最大化时禁用缩放
+        if self.isMaximized():
+            return None
+        m = self._resize_margin
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        top = y <= m
+        bottom = y >= h - m
+        left = x <= m
+        right = x >= w - m
+        if top and left:
+            return "topleft"
+        if top and right:
+            return "topright"
+        if bottom and left:
+            return "bottomleft"
+        if bottom and right:
+            return "bottomright"
+        if top:
+            return "top"
+        if bottom:
+            return "bottom"
+        if left:
+            return "left"
+        if right:
+            return "right"
+        return None
+
+    _EDGE_CURSORS = {
+        "top": Qt.SizeVerCursor,
+        "bottom": Qt.SizeVerCursor,
+        "left": Qt.SizeHorCursor,
+        "right": Qt.SizeHorCursor,
+        "topleft": Qt.SizeFDiagCursor,
+        "bottomright": Qt.SizeFDiagCursor,
+        "topright": Qt.SizeBDiagCursor,
+        "bottomleft": Qt.SizeBDiagCursor,
+    }
+
+    def _apply_cursor(self, pos):
+        edge = self._edge_at(pos)
+        if edge:
+            self.setCursor(self._EDGE_CURSORS[edge])
+        else:
+            self.unsetCursor()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            edge = self._edge_at(event.pos())
+            if edge:
+                self._resize_mode = edge
+                self._resize_start_geom = self.geometry()
+                self._resize_start_pos = event.globalPos()
+                event.accept()
+                return
+            if self._in_header(event.pos()):
+                self._dragging = True
+                self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super(MarketWindow, self).mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resize_mode and event.buttons() & Qt.LeftButton:
+            self._do_resize(event.globalPos())
+            event.accept()
+            return
+        if self._dragging and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_pos)
+            event.accept()
+            return
+        # 无按钮按下时，根据所在边缘更新光标
+        if not (event.buttons() & Qt.LeftButton):
+            self._apply_cursor(event.pos())
+        super(MarketWindow, self).mouseMoveEvent(event)
+
+    def _do_resize(self, global_pos):
+        mode = self._resize_mode
+        g = QtCore.QRect(self._resize_start_geom)
+        min_w = self.minimumWidth() or 720
+        min_h = self.minimumHeight() or 520
+        dx = global_pos.x() - self._resize_start_pos.x()
+        dy = global_pos.y() - self._resize_start_pos.y()
+
+        if "right" in mode:
+            new_w = max(min_w, g.width() + dx)
+            g.setWidth(new_w)
+        if "left" in mode:
+            new_w = max(min_w, g.width() - dx)
+            g.setLeft(g.right() - new_w + 1)
+            g.setWidth(new_w)
+        if "bottom" in mode:
+            new_h = max(min_h, g.height() + dy)
+            g.setHeight(new_h)
+        if "top" in mode:
+            new_h = max(min_h, g.height() - dy)
+            g.setTop(g.bottom() - new_h + 1)
+            g.setHeight(new_h)
+
+        self.setGeometry(g)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        self._resize_mode = None
+        self._resize_start_geom = None
+        self._resize_start_pos = None
+        super(MarketWindow, self).mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._in_header(event.pos()):
+            self._toggle_maximize()
+            return
+        super(MarketWindow, self).mouseDoubleClickEvent(event)
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _update_max_button(self):
+        # 最大化时显示还原图标，否则显示最大化图标
+        if self.isMaximized():
+            self.max_button.setText("\u2750")
+            self.max_button.setToolTip("还原")
+        else:
+            self.max_button.setText("\u25a1")
+            self.max_button.setToolTip("最大化")
+
+    def changeEvent(self, event):
+        super(MarketWindow, self).changeEvent(event)
+        if event.type() == QtCore.QEvent.WindowStateChange:
+            self._update_max_button()
+
+    # ------------------------------------------------------------------
+    # 用户登录 / 切换
+    # ------------------------------------------------------------------
+    def _prompt_login(self):
+        """首次启动或切换用户时，弹出登录框让用户填写个人名称。返回 (name, auto_login)。"""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("节点插件市场 · 登录")
+        dialog.setObjectName("taskDialog")
+        dialog.setMinimumWidth(380)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+
+        title = QtWidgets.QLabel("请输入你的个人名称")
+        title.setObjectName("taskTitle")
+        layout.addWidget(title)
+
+        hint = QtWidgets.QLabel(
+            "用于在服务器上区分你和其他用户的个人数据（收藏、设置）。\n"
+            "节点插件和在线目录是所有用户共享的。")
+        hint.setObjectName("taskStep")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        name_edit = QtWidgets.QLineEdit(_default_user_name())
+        name_edit.setObjectName("pathEdit")
+        name_edit.setPlaceholderText("个人名称")
+        name_edit.selectAll()
+        layout.addWidget(name_edit)
+
+        auto_check = QtWidgets.QCheckBox("自动登录（下次不再询问）")
+        auto_check.setObjectName("filterCheck")
+        auto_check.setChecked(True)
+        auto_check.setCursor(Qt.PointingHandCursor)
+        layout.addWidget(auto_check)
+
+        btns = QtWidgets.QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QtWidgets.QPushButton("取消")
+        cancel.setObjectName("ghostButton")
+        cancel.setCursor(Qt.PointingHandCursor)
+        ok = QtWidgets.QPushButton("确认")
+        ok.setObjectName("primaryButton")
+        ok.setCursor(Qt.PointingHandCursor)
+        ok.setDefault(True)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        layout.addLayout(btns)
+
+        ok.clicked.connect(dialog.accept)
+        cancel.clicked.connect(dialog.reject)
+
+        name = _default_user_name()
+        auto = True
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            text = name_edit.text().strip()
+            if text:
+                name = text
+            auto = auto_check.isChecked()
+        return name, auto
+
+    def switch_user(self):
+        """切换到另一个用户：重新登录并加载该用户的个人数据。"""
+        name, auto_login = self._prompt_login()
+        user = set_current_user(name, auto_login)
+        _migrate_shared_to_user(user)
+        self.user_name = user
+        # 重新加载该用户的个人设置与收藏
+        settings = load_settings()
+        self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
+        self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
+        self.scene_check = bool(settings.get("scene_check", True))
+        self.favorites = set(load_state().get("favorites") or [])
+        self.refresh()
+        self.notify("已切换到用户：%s" % user, True)
+        self.update_user_info()
+
+    def update_user_info(self):
+        """刷新设置页里的当前用户显示。"""
+        if hasattr(self, "user_name_label"):
+            self.user_name_label.setText("当前用户：%s" % self.user_name)
 
     def _build_discover_page(self):
         page = QtWidgets.QWidget()
@@ -1726,6 +2264,28 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         host_layout.setContentsMargins(22, 18, 22, 20)
         host_layout.setSpacing(12)
 
+        # 当前用户
+        user_card = self._settings_card(
+            "当前用户",
+            "个人数据（收藏、设置）按此名称隔离存放；节点插件和在线目录为所有用户共享。")
+        user_row = QtWidgets.QHBoxLayout()
+        user_row.setSpacing(8)
+        self.user_name_label = QtWidgets.QLabel("当前用户：%s" % self.user_name)
+        self.user_name_label.setObjectName("fieldValue")
+        user_row.addWidget(self.user_name_label, 1)
+        switch_user_btn = QtWidgets.QPushButton("切换用户")
+        switch_user_btn.setObjectName("ghostButton")
+        switch_user_btn.setCursor(Qt.PointingHandCursor)
+        switch_user_btn.setToolTip("用另一个个人名称登录，加载该用户的收藏和设置")
+        switch_user_btn.clicked.connect(self.switch_user)
+        user_row.addWidget(switch_user_btn)
+        user_card.layout().addLayout(user_row)
+        user_data_hint = QtWidgets.QLabel("个人数据目录：%s" % user_dir(self.user_name))
+        user_data_hint.setObjectName("mono")
+        user_data_hint.setToolTip(user_dir(self.user_name))
+        user_card.layout().addWidget(user_data_hint)
+        host_layout.addWidget(user_card)
+
         # 目录
         dir_card = self._settings_card("插件目录",
                                        "市场默认扫描这个目录；每个子文件夹名就是节点的注册序号。")
@@ -1782,6 +2342,23 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         scene_row.addWidget(self.scene_check_button)
         scene_card.layout().addLayout(scene_row)
 
+        # 环境检查跳过开关
+        env_row = QtWidgets.QHBoxLayout()
+        env_row.setSpacing(8)
+        self.env_skip_box = QtWidgets.QCheckBox(
+            "启动时跳过可选依赖的环境检查提示")
+        self.env_skip_box.setObjectName("filterCheck")
+        self.env_skip_box.setCursor(Qt.PointingHandCursor)
+        self.env_skip_box.setChecked(
+            bool(load_settings().get("skip_env_optional", False)))
+        self.env_skip_box.setToolTip(
+            "仅当缺失依赖全是可选的（如 requests）时才生效；"
+            "必需依赖缺失时仍会弹窗提示。")
+        self.env_skip_box.toggled.connect(self.on_env_skip_toggled)
+        env_row.addWidget(self.env_skip_box)
+        env_row.addStretch(1)
+        scene_card.layout().addLayout(env_row)
+
         # 规则
         rule_card = self._settings_card("命名与加载规则", "市场不识别文件夹本身，只识别节点。")
         rule_text = QtWidgets.QLabel(
@@ -1827,8 +2404,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             "作者：%s (%s)\n"
             "市场版本：v%s · 节点驱动\n"
             "GitHub：%s\n"
-            "收藏保存在 market_state.json；节点解析结果缓存在 market_cache.json，"
-            "文件改动或版本更新后会自动重载。"
+            "个人数据（收藏、设置）按用户名隔离在 user_data/<用户名>/ 下；"
+            "节点解析结果缓存在 market_cache.json（共享），文件改动或版本更新后会自动重载。"
             % (AUTHOR_NAME, AUTHOR_NAME_EN, TOOL_VERSION, MARKET_GITHUB_URL))
         about_text.setObjectName("ruleText")
         about_text.setWordWrap(True)
@@ -2003,68 +2580,81 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 widget.deleteLater()
         self.cards = []
 
+        self.empty_card.setVisible(not bool(self.plugins))
+        self.empty_path.setText(self.nodes_dir)
+        self.grid_host.setVisible(bool(self.plugins))
+
         for plugin in self.plugins:
             card = PluginCard(plugin, self.grid_host, self.run_plugin,
                               self.show_detail, self.card_menu_action,
                               self.toggle_favorite, self.is_favorite(plugin))
+            card.show()
             self.cards.append(card)
             self.grid.addWidget(card)
 
-        self.empty_card.setVisible(not bool(self.plugins))
-        self.empty_path.setText(self.nodes_dir)
-        self.grid_host.setVisible(bool(self.plugins))
         self._update_columns(force=True)
 
     def build_online_cards(self):
-        while self.online_grid.count():
-            item = self.online_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        self.online_cards = []
+        # 冻结绘制，避免「清空→逐张重建→重排」的中间过程被渲染出来造成闪烁。
+        host = getattr(self, "online_grid_host", None)
+        if host is not None:
+            host.setUpdatesEnabled(False)
+        try:
+            while self.online_grid.count():
+                item = self.online_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setParent(None)
+                    widget.deleteLater()
+            self.online_cards = []
 
-        local_by_id = {}
-        for plugin in self.plugins:
-            local_by_id[plugin.node_id_text] = plugin
+            local_by_id = {}
+            for plugin in self.plugins:
+                local_by_id[plugin.node_id_text] = plugin
 
-        entries = self.filtered_online_entries()
-        total = len(entries)
-        pages = max(1, (total + self.online_page_size - 1) // self.online_page_size)
-        if self.online_page_index >= pages:
-            self.online_page_index = pages - 1
-        if self.online_page_index < 0:
-            self.online_page_index = 0
-        start = self.online_page_index * self.online_page_size
-        page_entries = entries[start:start + self.online_page_size]
+            entries = self.filtered_online_entries()
+            total = len(entries)
+            pages = max(1, (total + self.online_page_size - 1) // self.online_page_size)
+            if self.online_page_index >= pages:
+                self.online_page_index = pages - 1
+            if self.online_page_index < 0:
+                self.online_page_index = 0
+            start = self.online_page_index * self.online_page_size
+            page_entries = entries[start:start + self.online_page_size]
 
-        for entry in page_entries:
-            card = OnlineCard(
-                entry, local_by_id.get(entry.node_id_text), self.online_grid_host,
-                self.install_online_entry, self.show_online_detail,
-                self.toggle_favorite, self.is_favorite(entry))
-            if entry.repo:
-                card.set_stars(self.online_stars.get(entry.repo, -1))
-            self.online_cards.append(card)
-            self.online_grid.addWidget(card)
+            has_page = bool(page_entries)
+            # 必须在创建卡片之前让宿主可见，否则卡片 isHidden() 为 True，
+            # _reflow_online 会把它们全部过滤掉（Qt 的 show 事件是异步的）。
+            self.online_grid_host.setVisible(has_page)
+            self.online_empty.setVisible(not self.online_entries)
+            self.online_no_result.setVisible(bool(self.online_entries) and not has_page)
+            if self.online_entries and not has_page:
+                self.online_no_result.setText(self.online_no_result_text())
 
-        has_page = bool(page_entries)
-        self.online_grid_host.setVisible(has_page)
-        self.online_empty.setVisible(not self.online_entries)
-        self.online_no_result.setVisible(bool(self.online_entries) and not has_page)
-        if self.online_entries and not has_page:
-            self.online_no_result.setText(self.online_no_result_text())
+            for entry in page_entries:
+                card = OnlineCard(
+                    entry, local_by_id.get(entry.node_id_text), self.online_grid_host,
+                    self.install_online_entry, self.show_online_detail,
+                    self.toggle_favorite, self.is_favorite(entry))
+                if entry.repo:
+                    card.set_stars(self.online_stars.get(entry.repo, -1))
+                card.show()
+                self.online_cards.append(card)
+                self.online_grid.addWidget(card)
 
-        self.online_pager.setVisible(total > self.online_page_size)
-        if total:
-            self.online_page_label.setText(
-                "第 %d / %d 页 · 共 %d 个" % (self.online_page_index + 1, pages, total))
-            self.online_prev_button.setEnabled(self.online_page_index > 0)
-            self.online_next_button.setEnabled(self.online_page_index + 1 < pages)
+            self.online_pager.setVisible(total > self.online_page_size)
+            if total:
+                self.online_page_label.setText(
+                    "第 %d / %d 页 · 共 %d 个" % (self.online_page_index + 1, pages, total))
+                self.online_prev_button.setEnabled(self.online_page_index > 0)
+                self.online_next_button.setEnabled(self.online_page_index + 1 < pages)
 
-        self._reflow_online()
-        self.update_online_summary()
-        self.update_update_all_button()
+            self._reflow_online()
+            self.update_online_summary()
+            self.update_update_all_button()
+        finally:
+            if host is not None:
+                host.setUpdatesEnabled(True)
 
     def filtered_online_entries(self):
         """搜索 + 标签 + 只看未安装 + 排序，返回当前应展示的条目。"""
@@ -2139,9 +2729,16 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not repos:
             return
         worker = StarsWorker(repos)
-        self._stars_worker = worker
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
         worker.done.connect(self._on_stars_loaded)
-        threading.Thread(target=worker.run, daemon=True).start()
+        worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+        self._stars_worker = worker
+        self._stars_thread = thread
+        thread.start()
 
     def _on_stars_loaded(self, stars):
         if not isinstance(stars, dict) or not stars:
@@ -2153,9 +2750,16 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
     def check_market_version(self):
         worker = VersionWorker()
-        self._version_worker = worker
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
         worker.done.connect(self._on_version_checked)
-        threading.Thread(target=worker.run, daemon=True).start()
+        worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+        self._version_worker = worker
+        self._version_thread = thread
+        thread.start()
 
     def _on_version_checked(self, version):
         if not version or not online_market.is_newer(version, TOOL_VERSION):
@@ -2313,10 +2917,15 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         favorite_online = [entry for entry in self.online_entries
                            if self.is_favorite(entry) and entry.node_id_text not in local_ids]
 
+        has_favorites = bool(favorite_plugins or favorite_online)
+        self.favorites_empty.setVisible(not has_favorites)
+        self.favorites_grid_host.setVisible(has_favorites)
+
         for plugin in favorite_plugins:
             card = PluginCard(plugin, self.favorites_grid_host, self.run_plugin,
                               self.show_detail, self.card_menu_action,
                               self.toggle_favorite, True)
+            card.show()
             self.favorite_cards.append(card)
             self.favorites_grid.addWidget(card)
         for entry in favorite_online:
@@ -2324,12 +2933,10 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 entry, None, self.favorites_grid_host,
                 self.install_online_entry, self.show_online_detail,
                 self.toggle_favorite, True)
+            card.show()
             self.favorite_cards.append(card)
             self.favorites_grid.addWidget(card)
 
-        has_favorites = bool(favorite_plugins or favorite_online)
-        self.favorites_empty.setVisible(not has_favorites)
-        self.favorites_grid_host.setVisible(has_favorites)
         self._reflow_favorites()
 
     def is_favorite(self, plugin):
@@ -2352,14 +2959,30 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.update_status()
         self.notify("%s：%s" % (plugin.title, message), True)
 
+    def _active_scroll(self):
+        # 返回当前标签页对应的滚动区，避免在非「发现」页时读取到隐藏页的过期视口宽度
+        index = self.stack.currentIndex() if hasattr(self, "stack") else 0
+        mapping = {
+            0: getattr(self, "discover_scroll", None),
+            1: getattr(self, "online_scroll", None),
+            2: getattr(self, "favorites_scroll", None),
+            3: getattr(self, "loaded_scroll", None),
+            4: getattr(self, "settings_scroll", None),
+        }
+        scroll = mapping.get(index)
+        if scroll is None:
+            scroll = getattr(self, "discover_scroll", None)
+        return scroll
+
     def _update_columns(self, force=False):
+        scroll = self._active_scroll()
         try:
-            viewport = self.discover_scroll.viewport().width()
+            viewport = scroll.viewport().width() if scroll is not None else 0
         except Exception:
             viewport = 0
         if viewport <= 0:
-            viewport = self.width() - 44
-        columns = max(1, min(4, int((viewport - 44 + 14) / (320 + 14))))
+            viewport = self.width() - GRID_MARGIN
+        columns = max(1, min(MAX_COLUMNS, int((viewport - GRID_MARGIN + GRID_SPACING) / (CARD_WIDTH + GRID_SPACING))))
         if force or columns != self._columns:
             self._columns = columns
             self.reflow()
@@ -2374,7 +2997,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             row = index // self._columns
             column = index % self._columns
             self.grid.addWidget(card, row, column, Qt.AlignTop | Qt.AlignLeft)
-        for column in range(4):
+        for column in range(MAX_COLUMNS + 2):
             self.grid.setColumnStretch(column, 0)
         self.grid.setColumnStretch(self._columns, 1)
 
@@ -2388,7 +3011,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             row = index // self._columns
             column = index % self._columns
             self.online_grid.addWidget(card, row, column, Qt.AlignTop | Qt.AlignLeft)
-        for column in range(4):
+        for column in range(MAX_COLUMNS + 2):
             self.online_grid.setColumnStretch(column, 0)
         self.online_grid.setColumnStretch(self._columns, 1)
         self.online_grid.invalidate()
@@ -2409,7 +3032,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             row = index // self._columns
             column = index % self._columns
             self.favorites_grid.addWidget(card, row, column, Qt.AlignTop | Qt.AlignLeft)
-        for column in range(4):
+        for column in range(MAX_COLUMNS + 2):
             self.favorites_grid.setColumnStretch(column, 0)
         self.favorites_grid.setColumnStretch(self._columns, 1)
         # 收藏页第一次显示时布局还没激活，补一次高度计算，否则会出现空白页
@@ -2445,8 +3068,14 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self._filter_cards(self.cards, text, self.no_result)
             self.reflow()
         elif index == 1:
-            self.online_page_index = 0
-            self.build_online_cards()
+            # 仅当「搜索词 + 已选标签」都没变且卡片已建好时才跳过，
+            # 避免切回在线页时无谓的整套重建/闪烁；改词或点标签仍会正常重建。
+            state = (text, frozenset(self.active_tags))
+            last = getattr(self, "_last_online_filter_state", None)
+            self._last_online_filter_state = state
+            if state != last or not getattr(self, "online_cards", None):
+                self.online_page_index = 0
+                self.build_online_cards()
         elif index == 2:
             self._filter_cards(self.favorite_cards, text, self.fav_no_result)
             self._reflow_favorites()
@@ -2530,6 +3159,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def update_settings(self):
         if not hasattr(self, "scan_summary"):
             return
+        self.update_user_info()
         self.path_edit.setText(self.nodes_dir)
         if hasattr(self, "scene_check_box"):
             self.scene_check_box.setChecked(self.scene_check)
@@ -2623,9 +3253,16 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not self.online_entries:
             self.online_empty.setVisible(True)
         worker = CatalogWorker()
-        self._catalog_worker = worker
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
         worker.done.connect(self._on_catalog_loaded)
-        threading.Thread(target=worker.run, daemon=True).start()
+        worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+        self._catalog_worker = worker
+        self._catalog_thread = thread
+        thread.start()
 
     def _on_catalog_loaded(self, ok, data, error):
         self.online_loading = False
@@ -2734,12 +3371,19 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         dialog.cancel_button.clicked.connect(self._update_cancel.set)
 
         worker = MarketUpdateWorker(self._download_market_update, self._update_cancel)
-        self._update_worker = worker
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
         worker.progress.connect(dialog.set_stage)
         worker.done.connect(
             lambda ok, copied, error: self._on_market_update_done(
                 dialog, ok, copied, error))
-        threading.Thread(target=worker.run, daemon=True).start()
+        worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+        self._update_worker = worker
+        self._update_thread = thread
+        thread.start()
 
     def _on_market_update_done(self, dialog, ok, copied, error):
         dialog.finish()
@@ -2930,6 +3574,15 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         else:
             self.unregister_scene_hook()
 
+    def on_env_skip_toggled(self, checked):
+        """设置页「跳过可选依赖提示」开关。"""
+        try:
+            data = load_settings()
+            data["skip_env_optional"] = bool(checked)
+            save_settings(data)
+        except Exception as exc:
+            cmds.warning(u"保存设置失败：%s" % exc)
+
     def scene_catalog_entries(self):
         if self.online_entries:
             return self.online_entries
@@ -3046,7 +3699,336 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def resizeEvent(self, event):
         super(MarketWindow, self).resizeEvent(event)
         if hasattr(self, "discover_scroll"):
+            # 直接重算列数，保证拖拽缩放时卡片实时重排；
+            # 再用 singleShot(0) 兜底一次，处理布局尚未稳定的情况。
+            self._update_columns()
             QtCore.QTimer.singleShot(0, self._update_columns)
+
+
+# ---------------------------------------------------------------------------
+# 启动环境检查对话框
+# 列出缺失的依赖，支持一键自动安装（pip）和跳转下载链接手动安装。
+# ---------------------------------------------------------------------------
+class _InstallWorker(QtCore.QObject):
+    finished = QtCore.Signal(bool, str)
+
+    def __init__(self, pip_name):
+        super(_InstallWorker, self).__init__()
+        self._pip_name = pip_name
+
+    def run(self):
+        ok, out = pip_install_package(self._pip_name)
+        self.finished.emit(ok, out)
+
+
+class EnvironmentCheckDialog(QtWidgets.QDialog):
+    """环境检查对话框：无边框、深色风格与 MarketWindow 保持一致。"""
+
+    def __init__(self, missing, parent=None):
+        super(EnvironmentCheckDialog, self).__init__(parent)
+        self.setObjectName("envDialog")
+        self.setWindowTitle(u"节点插件市场 — 环境检查")
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(360)
+        self.resize(600, 440)
+        # 无边框 + 置顶：避免原生浅色标题栏
+        self.setWindowFlags(
+            self.windowFlags() | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setMouseTracking(True)
+        self._dragging = False
+        self._drag_pos = QtCore.QPoint()
+        self._missing = list(missing)
+        self._rows = {}
+        self._install_threads = []
+        self._build_ui()
+        self.setStyleSheet(QSS)
+
+    # ------------------------------------------------------------------
+    # 无边框拖动
+    # ------------------------------------------------------------------
+    def _in_header(self, pos):
+        if not hasattr(self, "_header_geom"):
+            return False
+        return self._header_geom.contains(pos)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._in_header(event.pos()):
+            self._dragging = True
+            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super(EnvironmentCheckDialog, self).mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_pos)
+            event.accept()
+        else:
+            super(EnvironmentCheckDialog, self).mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        super(EnvironmentCheckDialog, self).mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        # 双击标题栏也允许触发（与主窗口一致）
+        if self._in_header(event.pos()):
+            if self.isMaximized():
+                self.showNormal()
+            else:
+                self.showMaximized()
+            event.accept()
+        else:
+            super(EnvironmentCheckDialog, self).mouseDoubleClickEvent(event)
+
+    # ------------------------------------------------------------------
+    # 界面
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # 顶部自定义标题栏
+        header = QtWidgets.QFrame()
+        header.setObjectName("envHeader")
+        header.setFixedHeight(44)
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 0, 12, 0)
+        header_layout.setSpacing(10)
+
+        icon = QtWidgets.QLabel()
+        icon.setFixedSize(18, 18)
+        icon.setStyleSheet(
+            "background:#4a86e8;border-radius:4px;color:white;"
+            "font-weight:bold;font-size:11px;padding-left:5px;")
+        icon.setText(u"!")
+        header_layout.addWidget(icon, 0, Qt.AlignVCenter)
+
+        title = QtWidgets.QLabel(u"环境检查")
+        title.setObjectName("envTitle")
+        header_layout.addWidget(title, 0, Qt.AlignVCenter)
+        header_layout.addStretch(1)
+
+        close_btn = QtWidgets.QPushButton(u"×")
+        close_btn.setObjectName("winClose")
+        close_btn.setFixedSize(30, 24)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setToolTip(u"取消")
+        close_btn.clicked.connect(self.reject)
+        header_layout.addWidget(close_btn, 0, Qt.AlignVCenter)
+
+        outer.addWidget(header)
+        self._header_geom = QtCore.QRect(0, 0, self.width(), header.height())
+
+        # 内容区
+        body = QtWidgets.QWidget()
+        body_layout = QtWidgets.QVBoxLayout(body)
+        body_layout.setContentsMargins(18, 14, 18, 14)
+        body_layout.setSpacing(10)
+
+        tip = QtWidgets.QLabel(
+            u"检测到以下运行依赖缺失——点击「一键安装」可自动用当前 Maya 的 pip 安装；"
+            u"也可点「下载」手动获取后自行安装。")
+        tip.setObjectName("envTip")
+        tip.setWordWrap(True)
+        body_layout.addWidget(tip)
+
+        self._list = QtWidgets.QWidget()
+        list_layout = QtWidgets.QVBoxLayout(self._list)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(8)
+
+        for dep in self._missing:
+            list_layout.addWidget(self._make_row(dep))
+        list_layout.addStretch(1)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setWidget(self._list)
+        body_layout.addWidget(scroll, 1)
+
+        # 忽略勾选（仅在没有必需依赖缺时才显得有意义）
+        all_optional = all(not d["required"] for d in self._missing)
+        self._skip_check = QtWidgets.QCheckBox(u"下次启动忽略可选依赖提示")
+        self._skip_check.setObjectName("filterCheck")
+        self._skip_check.setCursor(Qt.PointingHandCursor)
+        self._skip_check.setEnabled(all_optional)
+        self._skip_check.setChecked(
+            bool(load_settings().get("skip_env_optional", False)) and all_optional)
+        self._skip_check.setToolTip(
+            u"勾选后，当缺失的全是可选依赖时，下次启动不再弹窗提示；"
+            u"可在设置里随时重新开启。")
+        body_layout.addWidget(self._skip_check)
+
+        # 底部按钮
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        self._cancel_btn = QtWidgets.QPushButton(u"取消")
+        self._cancel_btn.setObjectName("ghostButton")
+        self._cancel_btn.clicked.connect(self.reject)
+        self._continue_btn = QtWidgets.QPushButton(u"继续启动")
+        self._continue_btn.setObjectName("primaryButton")
+        self._continue_btn.clicked.connect(self._on_continue)
+        btn_row.addWidget(self._cancel_btn)
+        btn_row.addWidget(self._continue_btn)
+        body_layout.addLayout(btn_row)
+
+        outer.addWidget(body, 1)
+        self._refresh_continue_state()
+
+    def resizeEvent(self, event):
+        # 让标题栏几何随窗口尺寸更新（拖动 hit-test 需要）
+        super(EnvironmentCheckDialog, self).resizeEvent(event)
+        if hasattr(self, "_header_geom"):
+            self._header_geom = QtCore.QRect(0, 0, self.width(), 44)
+
+    def _make_row(self, dep):
+        card = QtWidgets.QFrame()
+        card.setObjectName("envRow")
+        v = QtWidgets.QVBoxLayout(card)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(6)
+
+        # 第一行：名称 + 必需/可选标签
+        header = QtWidgets.QHBoxLayout()
+        name = QtWidgets.QLabel(dep["display"])
+        name.setObjectName("envRowTitle")
+        header.addWidget(name)
+        tag = QtWidgets.QLabel((u"必需" if dep["required"] else u"可选"))
+        tag.setObjectName("badge")
+        tag.setStyleSheet(
+            "background:rgba(232,17,35,0.14);color:#ffb7bf;"
+            "border:1px solid rgba(232,17,35,0.35);border-radius:9px;"
+            "padding:2px 9px;font-size:11px;" if dep["required"] else
+            "background:rgba(91,157,255,0.14);color:#9cc4ff;"
+            "border:1px solid rgba(91,157,255,0.35);border-radius:9px;"
+            "padding:2px 9px;font-size:11px;")
+        header.addWidget(tag)
+        header.addStretch(1)
+        v.addLayout(header)
+
+        desc = QtWidgets.QLabel(dep.get("description", ""))
+        desc.setObjectName("envRowDesc")
+        desc.setWordWrap(True)
+        v.addWidget(desc)
+
+        # 按钮行
+        btns = QtWidgets.QHBoxLayout()
+        install_btn = QtWidgets.QPushButton(u"一键安装")
+        install_btn.setObjectName("envInstall")
+        install_btn.setCursor(Qt.PointingHandCursor)
+        install_btn.clicked.connect(
+            lambda _=False, d=dep, b=install_btn: self._install_one(d, b))
+        dl_btn = QtWidgets.QPushButton(u"下载")
+        dl_btn.setObjectName("envDl")
+        dl_btn.setCursor(Qt.PointingHandCursor)
+        dl_btn.clicked.connect(lambda _=False, d=dep: self._open_download(d))
+        status = QtWidgets.QLabel(u"")
+        status.setObjectName("envRowStatus")
+        status.setStyleSheet("color:#9aa1ad;")
+        btns.addWidget(install_btn)
+        btns.addWidget(dl_btn)
+        btns.addStretch(1)
+        btns.addWidget(status)
+        v.addLayout(btns)
+
+        self._rows[dep["import_name"]] = {
+            "status": status, "install_btn": install_btn, "dep": dep}
+        return card
+
+    def _open_download(self, dep):
+        url = dep.get("download_url")
+        if url:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+
+    def _install_one(self, dep, install_btn):
+        install_btn.setEnabled(False)
+        install_btn.setText(u"安装中…")
+        row = self._rows[dep["import_name"]]
+        row["status"].setText(u"正在通过 pip 安装 %s…" % dep["pip_name"])
+        row["status"].setStyleSheet("color:#cfe0ff;")
+
+        thread = QtCore.QThread(self)
+        worker = _InstallWorker(dep["pip_name"])
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda ok, out, d=dep, w=worker, t=thread:
+                self._on_install_done(d, ok, out, w, t))
+        self._install_threads.append(thread)
+        thread.start()
+
+    def _on_install_done(self, dep, ok, out, worker, thread):
+        row = self._rows[dep["import_name"]]
+        install_btn = row["install_btn"]
+        if ok:
+            install_btn.setText(u"已安装")
+            install_btn.setEnabled(False)
+            row["status"].setText(u"%s 安装成功。" % dep["pip_name"])
+            row["status"].setStyleSheet("color:#4caf50;")
+            self._missing = [
+                d for d in self._missing if d["import_name"] != dep["import_name"]]
+        else:
+            install_btn.setText(u"一键安装")
+            install_btn.setEnabled(True)
+            row["status"].setText(u"安装失败，请点「下载」手动安装。")
+            row["status"].setStyleSheet("color:#e81123;")
+            cmds.warning(u"安装 %s 失败：%s" % (dep["pip_name"], out))
+        try:
+            worker.deleteLater()
+        except Exception:
+            pass
+        thread.quit()
+        thread.wait()
+        if thread in self._install_threads:
+            self._install_threads.remove(thread)
+        self._refresh_continue_state()
+
+    def _wait_for_installs(self):
+        # 关闭对话框前等待仍在运行的 pip 安装线程结束，
+        # 否则对话框销毁会连带销毁其子 QThread，导致
+        # “QThread: Destroyed while thread is still running” 崩溃。
+        for thread in list(self._install_threads):
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait()
+            except Exception:
+                pass
+        self._install_threads = []
+
+    def accept(self):
+        self._wait_for_installs()
+        super(EnvironmentCheckDialog, self).accept()
+
+    def reject(self):
+        self._wait_for_installs()
+        super(EnvironmentCheckDialog, self).reject()
+
+    def closeEvent(self, event):
+        self._wait_for_installs()
+        super(EnvironmentCheckDialog, self).closeEvent(event)
+
+    def _refresh_continue_state(self):
+        has_required = any(d["required"] for d in self._missing)
+        self._continue_btn.setEnabled(not has_required)
+        if has_required:
+            self._continue_btn.setToolTip(u"仍有必需依赖未安装，无法继续启动。")
+        else:
+            self._continue_btn.setToolTip(u"")
+
+    def _on_continue(self):
+        # 把忽略勾选写入用户设置，下次启动跳过。
+        try:
+            data = load_settings()
+            data["skip_env_optional"] = bool(self._skip_check.isChecked())
+            save_settings(data)
+        except Exception:
+            pass
+        self.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -3070,6 +4052,18 @@ class WindowHandle(object):
         self._window = None
 
     def show(self):
+        # 启动前先做一次环境检查；缺失依赖会弹出对话框，
+        # 必需依赖未安装时用户无法继续，可选依赖仅提示不阻塞。
+        # 用户勾选过「忽略可选依赖」后，如果当前缺失全是可选的，
+        # 直接跳过对话框进入主窗口。
+        missing = check_environment()
+        if missing:
+            all_optional = all(not d["required"] for d in missing)
+            skip_env = bool(load_settings().get("skip_env_optional", False))
+            if not (all_optional and skip_env):
+                dlg = EnvironmentCheckDialog(missing)
+                if dlg.exec_() != QtWidgets.QDialog.Accepted:
+                    return None
         # 先处理掉待删除的旧窗口，避免复用一个马上会被销毁的实例
         try:
             QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
