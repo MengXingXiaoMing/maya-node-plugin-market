@@ -2114,8 +2114,10 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             source = ""
             if self.online_catalog:
                 source_url = self.online_catalog.get("_source_url") or ""
-                source = "jsDelivr" if "jsdelivr" in source_url else (
-                    "GitHub" if "github" in source_url else "本地缓存")
+                source = self.online_catalog.get("_source_label") or ""
+                if not source:
+                    source = "jsDelivr" if "jsdelivr" in source_url else (
+                        "GitHub" if "github" in source_url else "本地缓存")
             when = ""
             if self.online_fetched_at:
                 when = time.strftime("%Y-%m-%d %H:%M", time.localtime(self.online_fetched_at))
