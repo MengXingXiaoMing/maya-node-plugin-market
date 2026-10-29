@@ -30,7 +30,7 @@ INDEX_REPO = "maya-node-plugin-index"
 INDEX_BRANCH = "main"
 INDEX_URL = "https://github.com/%s/%s" % (INDEX_OWNER, INDEX_REPO)
 CACHE_VERSION = 1
-USER_AGENT = "MayaNodeMarket/2.2"
+USER_AGENT = "MayaNodeMarket/2.4"
 
 
 class Cancelled(Exception):
@@ -186,22 +186,47 @@ def is_newer(new_version, old_version):
     return version_tuple(new_version) > version_tuple(old_version)
 
 
-def _tick(tick):
-    if tick is not None:
-        tick()
+def human_bytes(value):
+    try:
+        value = int(value)
+    except Exception:
+        return "0 B"
+    if value >= 1024 * 1024:
+        return "%.1f MB" % (value / (1024.0 * 1024.0))
+    if value >= 1024:
+        return "%.1f KB" % (value / 1024.0)
+    return "%d B" % value
 
 
-def _download(url, target, tick=None):
+def _report(report, stage, message, percent=None, detail=""):
+    if report is not None:
+        report(stage, message, percent, detail)
+
+
+def _download(url, target, report=None):
     request = UrlRequest(url, headers={"User-Agent": USER_AGENT})
     response = urlopen(request, timeout=60)
     try:
+        total = 0
+        try:
+            total = int(response.headers.get("Content-Length") or 0)
+        except Exception:
+            total = 0
+        downloaded = 0
         with io.open(target, "wb") as handle:
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
-                _tick(tick)
+                downloaded += len(chunk)
+                percent = None
+                if total > 0:
+                    percent = 5 + 50.0 * downloaded / total
+                detail = "已下载 %s" % human_bytes(downloaded)
+                if total > 0:
+                    detail += " / %s" % human_bytes(total)
+                _report(report, "download", "正在下载插件包...", percent, detail)
     finally:
         response.close()
     if not os.path.isfile(target) or os.path.getsize(target) < 16:
@@ -315,8 +340,12 @@ def validate_package(folder, entry):
     return plugin
 
 
-def install_entry(entry, nodes_dir, tick=None):
-    """下载并安装一个目录条目，返回安装目录。"""
+def install_entry(entry, nodes_dir, report=None):
+    """下载并安装一个目录条目，返回安装目录。
+
+    report(stage, message, percent, detail) 用于进度页；percent 为 0-100，
+    None 表示当前阶段无法计算百分比。
+    """
     if entry.node_id is None:
         raise ValueError("条目缺少 node_id")
     if not nodes_dir:
@@ -328,23 +357,38 @@ def install_entry(entry, nodes_dir, tick=None):
     try:
         archive_path = os.path.join(temp_dir, "package")
         if entry.asset:
-            _download(entry.asset, archive_path, tick)
+            source_label = "GitHub Release: %s" % entry.asset
+            source_url = entry.asset
         elif entry.repo:
-            url = "https://codeload.github.com/%s/zip/refs/heads/%s" % (
+            source_label = "GitHub 仓库: %s%s" % (
+                entry.repo, ("/" + entry.subpath) if entry.subpath else "")
+            source_url = "https://codeload.github.com/%s/zip/refs/heads/%s" % (
                 entry.repo, entry.branch or INDEX_BRANCH)
-            _download(url, archive_path, tick)
         else:
             raise ValueError("条目缺少 repo 或 asset")
 
+        _report(report, "prepare", "正在连接 GitHub...", 2, "来源：" + source_label)
+        _download(source_url, archive_path, report)
+        _report(report, "download", "插件包下载完成", 58,
+                "已下载 %s" % human_bytes(os.path.getsize(archive_path)))
+
+        _report(report, "extract", "正在解压插件包...", 64, source_label)
         source_dir = _extract_package(archive_path, entry, temp_dir)
+
+        _report(report, "validate", "正在校验节点序号和 NODE_INFO...", 74,
+                "节点：%s · %s" % (entry.node_name, entry.node_id_text))
         validate_package(source_dir, entry)
 
         target = os.path.join(nodes_dir, entry.node_id_text)
         backup = os.path.join(temp_dir, "backup")
         if os.path.isdir(target):
+            _report(report, "backup", "正在备份本地旧版本...", 82, target)
             shutil.move(target, backup)
+        else:
+            _report(report, "backup", "本地没有旧版本，跳过备份", 82, target)
 
         try:
+            _report(report, "write", "正在写入本地 nodes 目录...", 90, target)
             shutil.copytree(
                 source_dir, target,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
@@ -354,6 +398,7 @@ def install_entry(entry, nodes_dir, tick=None):
             if os.path.isdir(backup):
                 shutil.move(backup, target)
             raise
+        _report(report, "done", "安装完成", 100, target)
         return target
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
