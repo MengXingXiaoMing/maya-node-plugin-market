@@ -67,7 +67,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "2.7"
+TOOL_VERSION = "2.8"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -1265,6 +1265,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._stars_worker = None
         self.market_update_available = ""
         self.scene_hook_ids = []
+        self.scene_save_id = None
         self._scene_prompted = set()
         self._scene_reopen_guard = False
         cached, cached_at = online_market.load_catalog_cache(CATALOG_CACHE_PATH)
@@ -1747,7 +1748,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         # 场景依赖检测
         scene_card = self._settings_card(
             "场景依赖检测",
-            "打开文件时发现缺少的节点插件会提示并支持一键安装；只在市场窗口打开的这一会话生效。")
+            "保存时把用到的节点写进文件；打开文件时发现缺少的插件会提示并支持一键安装。只在市场窗口打开的这一会话生效。")
         self.scene_check_box = QtWidgets.QCheckBox("打开文件时检测缺失节点")
         self.scene_check_box.setObjectName("filterCheck")
         self.scene_check_box.setCursor(Qt.PointingHandCursor)
@@ -2890,6 +2891,21 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if not self.scene_check or self.scene_hook_ids:
             return
         self.scene_hook_ids = scene_requirements.add_scene_callback(self.on_scene_opened)
+        self.scene_save_id = scene_requirements.add_save_callback(self.on_before_save)
+
+    def unregister_scene_hook(self):
+        scene_requirements.remove_scene_callbacks(self.scene_hook_ids)
+        self.scene_hook_ids = []
+        if self.scene_save_id is not None:
+            scene_requirements.remove_scene_callbacks([self.scene_save_id])
+            self.scene_save_id = None
+
+    def on_before_save(self, *args):
+        """保存前把当前场景用到的节点插件写进 fileInfo。"""
+        try:
+            scene_requirements.save_requirements(self.plugins)
+        except Exception as exc:
+            cmds.warning("写入场景插件清单失败：%s" % exc)
 
     def on_scene_opened(self, *args):
         if self._scene_reopen_guard:
@@ -2904,8 +2920,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if self.scene_check:
             self.register_scene_hook()
         else:
-            scene_requirements.remove_scene_callbacks(self.scene_hook_ids)
-            self.scene_hook_ids = []
+            self.unregister_scene_hook()
 
     def scene_catalog_entries(self):
         if self.online_entries:
@@ -2919,7 +2934,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if auto and not self.scene_check:
             return
         missing = scene_requirements.missing_plugins()
-        if not missing:
+        requirement_ids = scene_requirements.requirement_node_ids()
+        if not missing and not requirement_ids:
             if not auto:
                 self.notify("当前文件没有缺失的节点插件", True)
             return
@@ -2933,9 +2949,17 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
                 return
 
         matched, local, unmatched = scene_requirements.match_requirements(
-            missing, entries, self.plugins)
+            missing, entries, self.plugins, requirement_ids)
+        # 已经装好、已经加载的不再提示
+        matched = [entry for entry in matched if self._local_plugin_for(entry) is None]
+        local = [plugin for plugin in local if not node_market.plugin_loaded(plugin.path)]
+        if not matched and not local and not unmatched:
+            if not auto:
+                self.notify("场景需要的插件都已就绪", True)
+            return
+
         scene_path = scene_requirements.current_scene()
-        signature = (scene_path, tuple(sorted(missing)))
+        signature = (scene_path, tuple(sorted(missing)), tuple(sorted(requirement_ids)))
         if auto and signature in self._scene_prompted:
             return
         self._scene_prompted.add(signature)
@@ -3007,8 +3031,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self._scene_reopen_guard = False
 
     def closeEvent(self, event):
-        scene_requirements.remove_scene_callbacks(self.scene_hook_ids)
-        self.scene_hook_ids = []
+        self.unregister_scene_hook()
         super(MarketWindow, self).closeEvent(event)
 
     # ------------------------------------------------------------------
