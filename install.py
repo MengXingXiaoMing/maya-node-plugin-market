@@ -87,7 +87,6 @@ def create_shelf_button(directory):
         "%s.window.show()\n"
     ) % (directory, MODULE_NAME, MODULE_NAME, MODULE_NAME)
     cmds.shelfButton(
-        name=LEGACY_NAMES[0],
         sourceType="python",
         image=icon,
         image1=icon,
