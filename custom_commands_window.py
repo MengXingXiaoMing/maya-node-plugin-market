@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.7"
+TOOL_VERSION = "3.1.8"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -1760,6 +1760,18 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
             warn.setWordWrap(True)
             layout.addWidget(warn)
 
+        # 3) 可选：把本次安装/加载的插件设为开机自动加载
+        self.autoload_box = None
+        if self._local_plugins or self.checkboxes:
+            self.autoload_box = QtWidgets.QCheckBox(
+                "同时设为「开机自动加载」（下次启动 Maya 自动加载这些插件）")
+            self.autoload_box.setObjectName("filterCheck")
+            self.autoload_box.setChecked(True)
+            self.autoload_box.setToolTip(
+                "勾选后，这次安装/加载的插件会写进开机自动加载清单，\n"
+                "以后启动 Maya 时会自动加载，不用再手动点一次「运行」。")
+            layout.addWidget(self.autoload_box)
+
         layout.addStretch(1)
         buttons = QtWidgets.QHBoxLayout()
         later = QtWidgets.QPushButton("稍后")
@@ -1795,6 +1807,9 @@ class SceneRequirementsDialog(QtWidgets.QDialog):
 
     def selected_entries(self):
         return [entry for box, entry in self.checkboxes if box.isChecked()]
+
+    def wants_autoload(self):
+        return bool(self.autoload_box and self.autoload_box.isChecked())
 
     def accept(self):
         self.wants_load_local = bool(self.local_box and self.local_box.isChecked())
@@ -4304,16 +4319,19 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         dialog = SceneRequirementsDialog(scene_path, matched, local, unmatched, self)
         if not exec_dialog(dialog):
             return
+        autoload = dialog.wants_autoload()
         if dialog.wants_load_local:
             for plugin in local:
                 node_market.load_plugin_file(plugin.path)
+            if autoload:
+                self._apply_scene_autoload(plugins=local)
         chosen = dialog.selected_entries()
         if chosen:
-            self.install_scene_entries(chosen)
+            self.install_scene_entries(chosen, autoload=autoload)
         elif dialog.wants_load_local and local:
             self.ask_reopen_scene()
 
-    def install_scene_entries(self, entries):
+    def install_scene_entries(self, entries, autoload=False):
         dialog = TaskProgressDialog(
             "安装场景所需插件", "共 %d 个插件" % len(entries), self)
         dialog.set_stage("准备安装...", 1, "")
@@ -4344,7 +4362,31 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.notify("有 %d 个插件安装失败" % len(failed), False)
         # 关键：装完立刻加载。否则重开文件时插件仍未加载，节点依旧 unknown。
         self._load_scene_plugins(entries)
+        if autoload:
+            self._apply_scene_autoload(entries=entries)
         self.ask_reopen_scene()
+
+    def _apply_scene_autoload(self, entries=None, plugins=None):
+        """把刚安装/加载的插件写进开机自动加载清单，下次启动 Maya 自动加载。"""
+        wanted = set()
+        for item in list(entries or []) + list(plugins or []):
+            node_id = str(getattr(item, "node_id_text", "") or "").lower()
+            if node_id:
+                wanted.add(node_id)
+        if not wanted:
+            return 0
+        changed = 0
+        for plugin in self.plugins:
+            if str(plugin.node_id_text).lower() not in wanted:
+                continue
+            if is_autoload(plugin.node_id_text):
+                continue
+            set_autoload(plugin, True)
+            changed += 1
+        if changed:
+            self.refresh()
+            self.notify("%d 个插件已设为开机自动加载" % changed, True)
+        return changed
 
     def _load_scene_plugins(self, entries):
         """把刚装好（或本地已有）的所需插件加载进 Maya，返回成功加载的数量。"""
