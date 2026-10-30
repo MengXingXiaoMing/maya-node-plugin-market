@@ -69,7 +69,7 @@ importlib.reload(node_market)
 importlib.reload(online_market)
 importlib.reload(scene_requirements)
 
-TOOL_VERSION = "3.1.6"
+TOOL_VERSION = "3.1.7"
 AUTHOR_NAME = "詹康明"
 AUTHOR_NAME_EN = "Kangming Zhan"
 GITHUB_OWNER = "MengXingXiaoMing"
@@ -86,6 +86,27 @@ UPDATE_FILES = (
     "install.py",
     "custom_commands_lcon.png",
 )
+
+
+def _file_stamp():
+    """当前磁盘代码的构建戳（版本号 + 各文件大小/mtime）。
+
+    用来判断「手里这个窗口是不是旧代码建的」：文件被更新包覆盖后戳会变，
+    重开窗口就能自动换血，不用重启 Maya。
+    """
+    parts = [TOOL_VERSION]
+    for _name in ("custom_commands_window.py", "node_market.py",
+                  "online_market.py", "scene_requirements.py", "install.py"):
+        try:
+            _stat = os.stat(os.path.join(FILE_DIR, _name))
+            parts.append("%d:%d" % (_stat.st_size, int(_stat.st_mtime)))
+        except Exception:
+            parts.append("?")
+    return "|".join(parts)
+
+
+BUILD_ID = _file_stamp()
+
 SETTINGS_PATH = os.path.join(FILE_DIR, "market_settings.json")
 STATE_PATH = os.path.join(FILE_DIR, "market_state.json")
 CACHE_PATH = os.path.join(FILE_DIR, "market_cache.json")
@@ -1980,6 +2001,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setObjectName("zkmNodeMarketWindow")
+        # 记录建窗时的构建戳；代码更新后旧窗口会被销毁重建
+        self._zkm_build = BUILD_ID
+        self._zkm_stale = False
+        # 关闭即销毁：否则重开时 find_existing_window 会把旧对象当成
+        # 「已存在窗口」直接复用，更新后的新代码永远不生效（只能重启 Maya）
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle("节点插件市场")
         if os.path.isfile(ICON_PATH):
             self.setWindowIcon(QtGui.QIcon(ICON_PATH))
@@ -4017,9 +4044,17 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             return
         self.notify("市场已更新：%s" % ", ".join(copied), True)
         self._set_update_available("")
-        QtWidgets.QMessageBox.information(
+        reply = QtWidgets.QMessageBox.question(
             self, "更新完成",
-            "市场代码已覆盖更新：\n%s\n\n关闭并重新打开市场后生效。" % "\n".join(copied))
+            "市场代码已覆盖更新：\n%s\n\n现在立即应用新代码吗？（无需重启 Maya）"
+            % "\n".join(copied),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes)
+        if reply == QtWidgets.QMessageBox.Yes:
+            # 排进事件循环：当前窗口和这个回调都会被销毁重建，不能在同一次调用里做
+            QtCore.QTimer.singleShot(0, reload_market_now)
+        else:
+            self.notify("新代码已就位，下次打开市场窗口时自动生效", True)
 
     def _download_market_update(self, report=None):
         request = UrlRequest(
@@ -4697,13 +4732,75 @@ class EnvironmentCheckDialog(QtWidgets.QDialog):
 # 入口（沿用旧写法：window.show()）
 # ---------------------------------------------------------------------------
 def find_existing_window():
+    """只认「当前构建」的窗口。
+
+    比对构建戳：磁盘代码被更新包覆盖后戳就变了，旧窗口不再复用，
+    show() 会把它销毁并用新代码重建。
+    """
+    stamp = _file_stamp()
     for widget in QtWidgets.QApplication.topLevelWidgets():
         try:
-            if widget.objectName() == "zkmNodeMarketWindow":
-                return widget
+            if widget.objectName() != "zkmNodeMarketWindow":
+                continue
+            if getattr(widget, "_zkm_stale", False):
+                continue
+            if getattr(widget, "_zkm_build", None) != stamp:
+                continue
+            return widget
         except RuntimeError:
             continue
     return None
+
+
+def dispose_window(widget):
+    """真正销毁一个市场窗口：注销场景回调 → 停后台线程 → 关闭并删除。"""
+    try:
+        widget._zkm_stale = True
+        widget.setObjectName("zkmNodeMarketWindowStale")
+    except RuntimeError:
+        return
+    for _call in ("unregister_scene_hook", "_stop_threads"):
+        try:
+            getattr(widget, _call)()
+        except Exception:
+            pass
+    try:
+        widget.setAttribute(Qt.WA_DeleteOnClose, True)
+        widget.close()
+        widget.deleteLater()
+    except Exception:
+        pass
+
+
+def dispose_stale_windows():
+    """把旧构建（或已标记废弃）的窗口全部销毁，避免残留回调/线程继续跑。"""
+    for widget in QtWidgets.QApplication.topLevelWidgets():
+        try:
+            name = widget.objectName()
+        except RuntimeError:
+            continue
+        if name == "zkmNodeMarketWindowStale":
+            dispose_window(widget)
+        elif name == "zkmNodeMarketWindow" and getattr(widget, "_zkm_build", None) != _file_stamp():
+            dispose_window(widget)
+
+
+def reload_market_now():
+    """更新包已覆盖磁盘：销毁旧窗口、重载模块、用新代码重建（无需重启 Maya）。
+
+    必须从事件循环里调用（singleShot），不能直接在旧方法栈里改模块字典。
+    """
+    module = sys.modules.get(__name__)
+    if module is None:
+        return None
+    dispose_stale_windows()
+    try:
+        importlib.reload(module)
+    except Exception as exc:
+        cmds.warning("重新加载市场代码失败：%s" % exc)
+        return None
+    QtCore.QTimer.singleShot(0, module.window.show)
+    return module
 
 
 WORKSPACE_CONTROL = "zkmNodeMarketWindowWorkspaceControl"
@@ -4714,7 +4811,7 @@ class WindowHandle(object):
         self._window = None
 
     def show(self):
-        # 先看有没有已经建好的窗口：有就直接显示，不再做环境检查、
+        # 先看有没有同一个构建建好的窗口：有就直接显示，不再做环境检查、
         # 不再重建界面。这样重复点击工具架按钮是「秒开」，也不会闪。
         # 注意：不要用 sendPostedEvents(None, DeferredDelete) 清理旧窗口，
         # 那会冲刷整个应用的延迟删除队列，把 Maya 自身 UI 提前删掉导致段错误。
@@ -4725,6 +4822,9 @@ class WindowHandle(object):
             window.raise_()
             window.activateWindow()
             return window
+
+        # 没有可用窗口：先彻底清掉旧构建的窗口，再用当前代码新建
+        dispose_stale_windows()
 
         # 只有真正要新建窗口时才做环境检查；缺失依赖会弹出对话框，
         # 必需依赖未安装时用户无法继续，可选依赖仅提示不阻塞。
