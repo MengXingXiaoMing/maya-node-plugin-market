@@ -19,6 +19,13 @@
   #mute{right:112px;min-width:76px;text-align:center}
   #hint{position:fixed;left:26px;bottom:28px;z-index:9;color:#3f4653;
     font:11px/1.5 "Cascadia Mono",Consolas,"Microsoft YaHei",monospace;letter-spacing:.8px;user-select:none}
+  #cap{position:fixed;left:50%;bottom:16%;z-index:8;transform:translateX(-50%) translateY(10px);
+    max-width:min(900px,84vw);padding:11px 24px;border-radius:10px;text-align:center;
+    background:rgba(8,10,14,.62);border:1px solid rgba(255,255,255,.08);
+    color:#e8edf5;font:15px/1.85 "Microsoft YaHei","PingFang SC",sans-serif;letter-spacing:1.4px;
+    opacity:0;transition:opacity .35s ease,transform .35s ease;pointer-events:none;
+    backdrop-filter:blur(4px)}
+  #cap.on{opacity:1;transform:translateX(-50%) translateY(0)}
   #start{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
     background:radial-gradient(60% 60% at 50% 45%,rgba(18,22,30,.92),rgba(6,7,10,.98));
     backdrop-filter:blur(6px);transition:opacity .5s}
@@ -42,6 +49,7 @@
 <div id="bar"></div>
 <button id="replay" class="btn">重播</button>
 <button id="mute" class="btn">♪ 声音</button>
+<div id="cap"></div>
 <div id="hint">空格 暂停 · M 静音 · R 重播</div>
 <div id="start">
   <div class="st-in">
@@ -49,8 +57,8 @@
     <div class="st-t">节点插件市场</div>
     <div class="st-s">以节点为单位 · 浏览 · 安装 · 更新 · 自动加载</div>
     <div class="st-line"></div>
-    <button id="go">▶&nbsp; 播放（含配乐与音效）</button>
-    <div class="st-h">建议佩戴耳机 · 空格暂停 · M 静音</div>
+    <button id="go">▶&nbsp; 播放（配乐 · 音效 · 人声解读）</button>
+    <div class="st-h">含中文人声旁白 · 建议佩戴耳机 · 空格暂停 · M 静音</div>
   </div>
 </div>
 <script>
@@ -58,6 +66,25 @@
 'use strict';
 
 var W=1600,H=900,DUR=56;
+// 全局节奏：0.65 = 比实时慢 35%，留给观众理解与反应的时间
+var RATE=0.65;
+// 关键画面的停顿：[虚拟秒, 停顿时长(ms)]
+var HOLDS=[[1.28,650],[2.56,650],[3.84,650],[5.12,650],[6.40,650],
+           [14.05,700],[14.90,650],[15.75,700],[23.20,650],[24.95,650],
+           [29.40,600],[32.15,600],[35.90,500],[41.40,500],[48.20,700]];
+var holdIdx=0,holdUntil=0;
+// 人声解读：at = 触发时刻，stop = 语音没播完时最多停留到这一刻
+var NARR=[
+  {at:0.50,stop:7.20,text:'一个节点插件，从下载到能用，要过几道坎？'},
+  {at:8.40,stop:11.20,text:'问题不是插件太少，而是没地方统一看见它们。'},
+  {at:12.40,stop:16.10,text:'节点插件市场：扫描插件目录里的节点，变成一张张卡片。'},
+  {at:17.40,stop:21.30,text:'版本、作者、节点序号，一屏看清，安装只要一次点击。'},
+  {at:22.60,stop:27.60,text:'打开别人的文件，缺哪个节点，它直接告诉你，一键补齐。'},
+  {at:29.00,stop:33.20,text:'设为开机自动加载，下次启动 Maya，插件已经在位。'},
+  {at:34.60,stop:39.60,text:'作者把节点投稿到在线目录，别人安装即用。'},
+  {at:41.00,stop:46.60,text:'收藏、标签、版本更新，一个窗口管到底。'},
+  {at:47.90,stop:53.00,text:'少一点查找，多一点创作。节点插件市场。'}
+];
 var D={bg:'#06070a',text:'#f2f5fa',dim:'#98a1b0',faint:'#5e6673',
   blue:'#4a86e8',purple:'#9b7fe0',teal:'#2ebf9f',yellow:'#f2c14e',red:'#e05561',green:'#57c98a'};
 // 实际界面配色（Maya 深灰主题）
@@ -435,14 +462,8 @@ var PLUGINS=[
    char:'魔',accent:'#2f9187',loaded:true,fav:true,
    desc:['程序化生成任意尺寸的魔方绑定：每层独立控','制器、90°吸附提交、自动配色。点「运行」会','加载节点并生成绑定。']},
   {name:'通用附着版卷轴',author:'詹康明',ver:'v1.0.1',node:'scrollMarketNode',id:'0x00151502',
-   char:'通',accent:'#2b7d76',loaded:false,fav:false,
+   char:'通',accent:'#2b7d76',loaded:false,fav:true,
    desc:['打开通用附着版卷轴窗口。每次点「运行」都','会先卸载，再重新加载插件和窗口模块，改完','代码不用重启 Maya。']},
-  {name:'样条 IK',author:'詹康明',ver:'v1.2.3',node:'ikSplineNode',id:'0x00141486',
-   char:'样',accent:'#3f7fe0',loaded:false,fav:true,
-   desc:['沿样条曲线求解 IK 链，支持扭转与拉伸，可','直接替换 Maya 原生 ikSplineHandle，参数随','场景保存。']},
-  {name:'裙子毛囊',author:'詹康明',ver:'v1.1.0',node:'hairFollicleNode',id:'0x00151503',
-   char:'裙',accent:'#8a6fbf',loaded:false,fav:false,
-   desc:['毛囊驱动的裙子解算，支持碰撞、重力与多层','布料叠加，适合长裙与披风。']}
 ];
 
 function uiBtn(x,y,w,h,label,alpha,filled,color,arrow){
@@ -484,7 +505,7 @@ function uiShell(t,alpha,tab,opt){
   var tw=measure('节点插件市场',25,700,1,SANS),px=R.x+28+tw+20;
   rrect(px,R.y+21,106,27,13.5,'#3b3f45','rgba(255,255,255,0.11)',1,alpha);
   dot(px+16,R.y+34.5,3.4,U.accent,alpha);
-  txt('v3.1.6 · 节点驱动',px+27,R.y+39,10,'#b8c0c9',alpha,'left',500,0.3,SANS);
+  txt('v3.1.8 · 节点驱动',px+27,R.y+39,10,'#b8c0c9',alpha,'left',500,0.3,SANS);
   txt('作者 詹康明',px+124,R.y+39,11,'#8d949c',alpha,'left',400,0.5,SANS);
 
   // 窗口按钮
@@ -531,7 +552,7 @@ function uiShell(t,alpha,tab,opt){
   line(R.x+1,fy,R.x+w-1,fy,'rgba(255,255,255,0.10)',alpha,1);
   txt(opt.path||'插件目录: E:\\code\\my_code\\IterativeVersion\\Maya_PY3_plug-in_2025\\ui\\qt_ui\\custom_commands\\nodes',
       R.x+28,fy+29,10,'#7d848c',alpha,'left',400,0,SANS);
-  var cnt=opt.count||'4 个节点 · 1 个已加载 · 2 个收藏';
+  var cnt=opt.count||'2 个节点 · 1 个已加载 · 2 个收藏';
   txt(cnt,R.x+w-176,fy+29,10.5,'#9aa1a9',alpha,'right',400,0.3,SANS);
   rrect(R.x+w-160,fy+12,132,30,6,'rgba(255,255,255,0.04)','rgba(255,255,255,0.12)',1,alpha);
   txt('打开插件目录',R.x+w-94,fy+31,11,'#cfd5dc',alpha,'center',400,0.3,SANS);
@@ -586,7 +607,7 @@ function sceneMarket(t){
   ctx.save();
   ctx.translate(cx2,cy2); ctx.scale(sx,sy); ctx.translate(-cx2,-cy2);
   glow(cx2,cy2,600,'rgba(63,127,224,0.16)',base*easeOut(lin(t,11.9,13.2)));
-  uiShell(t,base,0,{focus:t>12.5&&t<13.6,path:null,count:'4 个节点 · 1 个已加载 · 2 个收藏'});
+  uiShell(t,base,0,{focus:t>12.5&&t<13.6,path:null,count:'2 个节点 · 1 个已加载 · 2 个收藏'});
 
   var inner=win(t,12.55,13.1,16.2,16.75);
   if(inner<=0.004){ctx.restore();return;}
@@ -631,7 +652,7 @@ function sceneMarket(t){
     var hx=R.x+28,hy=gy+ch2+26;
     rrect(hx,hy,1120,44,6,'rgba(255,255,255,0.022)','rgba(255,255,255,0.08)',1,moreA*base);
     txt('＋',hx+22,hy+28,15,'rgba(255,255,255,0.30)',moreA*base,'left',400);
-    txt('在线目录还有 4 个节点 · 切到「在线」即可安装，无需再去找网盘和群文件',
+    txt('在线目录还有更多节点 · 切到「在线」即可安装，无需再去找网盘和群文件',
         hx+44,hy+27,11,'#9aa1a9',moreA*base,'left',400,0.2,SANS);
     txt('在线',hx+1088,hy+27,11,'#7cb0ff',moreA*base,'right',500,0.2,SANS);
   }
@@ -764,8 +785,8 @@ function sceneDelivery(t){
   var base=win(t,21.85,22.35,27.7,28.3);
   if(base<=0.004)return;
   var R=WR;
-  uiShell(t,base,0,{tags:false,path:'场景: E:\\project\\shot_010_final_v3   ·   3 个节点未注册',
-                    count:'0 个已加载 · 3 个缺失 · 1 个可更新'});
+  uiShell(t,base,0,{tags:false,path:'场景: E:\\project\\shot_010_final_v3   ·   2 个节点未注册',
+                    count:'0 个已加载 · 2 个缺失 · 1 个可更新'});
   rrect(R.x+1,R.y+68,R.w-2,R.h-69,0,'rgba(20,22,26,0.66)',null,0,base);
 
   var p=easeOutQuint(lin(t,22.0,22.9));
@@ -780,11 +801,10 @@ function sceneDelivery(t){
   txt('节点插件市场',mx+mw-18,my+30,10.5,'#8d949c',base,'right',400,0.3,SANS);
   line(mx+1,my+47,mx+mw-1,my+47,'rgba(255,255,255,0.10)',base,1);
 
-  txt('这个文件用到了 3 个没有注册的节点，打开后会被降级为 unknown。',mx+20,my+74,11.5,'#a3aab2',base,'left',400,0.2,SANS);
+  txt('这个文件用到了 2 个没有注册的节点，打开后会被降级为 unknown。',mx+20,my+74,11.5,'#a3aab2',base,'left',400,0.2,SANS);
 
   var names=[['rubikCubeNode','0x00141488','本地已下载，未加载'],
-             ['scrollMarketNode','0x00151502','在线可安装 · v1.0.1'],
-             ['ikSplineNode','0x00141486','在线可安装 · v1.2.3']];
+             ['scrollMarketNode','0x00151502','在线可安装 · v1.0.1']];
   for(var i=0;i<names.length;i++){
     var sy=my+92+i*64,sa=base*easeOut(lin(t,22.25+i*0.12,22.8+i*0.12));
     var ok=t>25.4+i*0.4;
@@ -801,7 +821,7 @@ function sceneDelivery(t){
   var by=my+mh-58;
   uiBtn(mx+20,by,86,32,'稍后',base);
   var pressed=t>24.7;
-  uiBtn(mx+mw-206,by,186,32,pressed?'正在加载 3 个节点…':'一键安装并加载',base,true,
+  uiBtn(mx+mw-206,by,186,32,pressed?'正在加载 2 个节点…':'一键安装并加载',base,true,
         pressed?U.accentDeep:U.accent);
   var prog=easeInOut(lin(t,24.8,26.1));
   if(prog>0){
@@ -816,7 +836,7 @@ function sceneDelivery(t){
   if(toast>0.004){
     rrect(mx+20,my+mh-106,mw-40,26,6,'rgba(65,168,107,0.10)','rgba(65,168,107,0.35)',1,
           toast*base);
-    txt('✓ 3 个节点已就绪 · 重开文件即可完整还原',mx+36,my+mh-88,10.5,U.green,toast*base,'left',500,0.2,SANS);
+    txt('✓ 2 个节点已就绪 · 重开文件即可完整还原',mx+36,my+mh-88,10.5,U.green,toast*base,'left',500,0.2,SANS);
   }
 
   var capA=win(t,26.6,27.2,27.7,28.3);
@@ -835,18 +855,17 @@ function sceneAutoLoad(t){
   var toSet=t>=30.85;
   var tab=toSet?4:3;
   uiShell(t,base,tab,{tags:false,path:'插件目录: E:\\code\\my_code\\IterativeVersion\\Maya_PY3_plug-in_2025\\ui\\qt_ui\\custom_commands\\nodes',
-    count:toSet?'1 个已加载 · 0 个可更新':'3 个已加载 · 2 个可更新'});
+    count:toSet?'1 个已加载 · 0 个可更新':'2 个已加载 · 1 个可更新'});
 
   var a1=win(t,28.4,29.0,30.8,31.15);
   if(a1>0.004){
     txt('已加载节点',R.x+28,R.y+202,15,U.text,a1*base,'left',600,0.4,SANS);
-    txt('3 个',R.x+118,R.y+202,11,'#8d949c',a1*base,'left',400,0.3,SANS);
+    txt('2 个',R.x+118,R.y+202,11,'#8d949c',a1*base,'left',400,0.3,SANS);
     uiBtn(R.x+R.w-118,R.y+182,90,30,'全部卸载',a1*base);
 
     var bx=R.x+28,by=R.y+218,bw=R.w-56;
     var rows=[['魔方绑定','rubikCubeNode','0x00141488','v2.0.0',true],
-              ['通用附着版卷轴','scrollMarketNode','0x00151502','v1.0.1',true],
-              ['样条 IK','ikSplineNode','0x00141486','v1.2.3',true]];
+              ['通用附着版卷轴','scrollMarketNode','0x00151502','v1.0.1',true]];
     // 表头
     rrect(bx,by,bw,30,4,'rgba(255,255,255,0.03)',null,0,a1*base);
     txt('节点',bx+18,by+19,10,'#7d848c',a1*base,'left',500,0.4,SANS);
@@ -897,17 +916,17 @@ function sceneAutoLoad(t){
     var va=a2*base*easeOut(lin(t,31.5,32.0));
     rrect(sx,vy,sw,128,6,'rgba(255,255,255,0.028)','rgba(255,255,255,0.09)',1,va);
     txt('插件市场版本',sx+18,vy+28,11.5,'#dfe4ea',va,'left',500,0.3,SANS);
-    txt('3.1.5',sx+18,vy+58,22,'#a3aab2',va,'left',300,0.5,SANS);
+    txt('3.1.7',sx+18,vy+58,22,'#a3aab2',va,'left',300,0.5,SANS);
     txt('→',sx+96,vy+56,14,'#7d848c',va,'left',400);
     var newA=win(t,31.9,32.3,33.3,33.95);
     if(newA>0.004){
-      txt('3.1.6',sx+132,vy+58,22,U.accent,newA*va,'left',300,0.5,SANS);
+      txt('3.1.8',sx+132,vy+58,22,U.accent,newA*va,'left',300,0.5,SANS);
       var chipW2=measure('最新版本',9.5,400,0.2,SANS)+16;
       rrect(sx+132+52,vy+40,chipW2,20,4,'rgba(63,127,224,0.10)','rgba(63,127,224,0.5)',1,newA*va);
       txt('最新版本',sx+132+52+chipW2/2,vy+54,9.5,'#8dbaff',newA*va,'center',400,0.2,SANS);
     }
     var upd=t>32.1;
-    uiBtn(sx+sw-166,vy+40,148,34,upd?'已更新到 3.1.6':'更新',va*base,true,
+    uiBtn(sx+sw-166,vy+40,148,34,upd?'已更新到 3.1.8':'更新',va*base,true,
           upd?U.accentDeep:U.accent);
     var uprog=easeInOut(lin(t,32.2,33.1));
     if(uprog>0)pbar(sx+18,vy+96,sw-36,4,uprog,U.accent,va*base,'rgba(255,255,255,0.08)');
@@ -1090,7 +1109,7 @@ function sceneFinale(t){
   var u3=win(t,52.2,52.9,56.0,56.0);
   if(u3>0.004){
     rrect(CX-58,752,116,30,15,'rgba(255,255,255,0.03)','rgba(255,255,255,0.10)',1,base*u3);
-    txt('v3.1.6',CX,772,11,D.dim,base*u3,'center',500,1.5);
+    txt('v3.1.8',CX,772,11,D.dim,base*u3,'center',500,1.5);
   }
 }
 
@@ -1274,7 +1293,8 @@ var AE=(function(){
   }
   function pump(vt,playing){
     if(!ready||muted||!playing)return;
-    if(t0===null)t0=ac.currentTime-vt;
+    // 每帧按当前虚拟时间重新锚定：节奏放慢/停顿后，音乐与画面仍然同步
+    t0=ac.currentTime-vt;
     if(nextStep<vt-0.4||nextStep>vt+3.2)nextStep=Math.ceil(vt/step)*step;
     var horizon=vt+0.4;
     while(nextStep<horizon){
@@ -1324,6 +1344,107 @@ var seekTo=parseFloat(qs.get('t'));
 var seekMode=isFinite(seekTo);
 if(seekMode){t=clamp(seekTo,0,DUR-0.05);playing=false;lastT=t;}
 
+// =====================================================================
+// 人声解读 + 节奏控制
+// =====================================================================
+var capEl=document.getElementById('cap');
+var synth=window.speechSynthesis||null;
+var zhVoice=null,cueUtter=null;
+
+function pickVoice(){
+  if(!synth||!synth.getVoices)return;
+  var all=[];
+  try{all=synth.getVoices()||[];}catch(e){all=[];}
+  if(!all.length)return;
+  var zh=[];
+  for(var i=0;i<all.length;i++){
+    var lang=(all[i].lang||'')+'';
+    if(/^zh|cmn|Chinese/i.test(lang)||/中文|普通话/.test(all[i].name||''))zh.push(all[i]);
+  }
+  var prefer=['Xiaoxiao','Yunxi','Yunyang','Huihui','Yaoyao','Kangkang','Tingting'];
+  for(var p=0;p<prefer.length&&!zhVoice;p++){
+    for(var j=0;j<zh.length;j++){
+      if((zh[j].name||'').indexOf(prefer[p])>=0){zhVoice=zh[j];break;}
+    }
+  }
+  if(!zhVoice&&zh.length)zhVoice=zh[0];
+}
+if(synth){
+  pickVoice();
+  if(synth.addEventListener)synth.addEventListener('voiceschanged',pickVoice);
+}
+
+function startCue(c){
+  c.started=true; c.released=false;
+  if(capEl){capEl.textContent=c.text;capEl.classList.add('on');}
+  // 兜底时长：语音引擎不回调时，也保证停够时间再走
+  c.releaseAt=Date.now()+1000+c.text.length*260;
+  if(!synth||!audioOn||AE.muted())return;   // 静音/无语音引擎：只出字幕，按字数停留
+  try{synth.cancel();}catch(e){}
+  var u=new SpeechSynthesisUtterance(c.text);
+  u.lang='zh-CN'; u.rate=0.95; u.pitch=1;
+  if(zhVoice)u.voice=zhVoice;
+  u.onend=function(){c.releaseAt=Date.now()+520;};
+  // 被我们自己 cancel 掉的不算失败；语音引擎不可用时按字数兜底停留
+  u.onerror=function(ev){
+    var why=(ev&&ev.error)||'';
+    if(why==='interrupted'||why==='canceled')return;
+    c.releaseAt=Date.now()+600;
+  };
+  cueUtter=u;
+  try{synth.speak(u);}catch(e){}
+}
+
+function tickNarration(){
+  for(var i=0;i<NARR.length;i++){
+    var c=NARR[i];
+    if(!c.started&&t>=c.at)startCue(c);
+  }
+}
+
+function resetNarration(){
+  for(var i=0;i<NARR.length;i++){
+    NARR[i].started=false;NARR[i].released=false;NARR[i].releaseAt=0;
+  }
+  holdIdx=0;holdUntil=0;
+  if(synth&&cueUtter){try{synth.cancel();}catch(e){}}
+  cueUtter=null;
+  if(capEl)capEl.classList.remove('on');
+}
+
+function silenceNarration(){
+  // 静音时立刻放行当前这句，避免时间闸门空等到兜底时长
+  if(synth&&cueUtter){try{synth.cancel();}catch(e){}}
+  cueUtter=null;
+  for(var i=0;i<NARR.length;i++){
+    var c=NARR[i];
+    if(c.started&&!c.released)c.releaseAt=Date.now();
+  }
+  if(capEl)capEl.classList.remove('on');
+}
+
+function clampTime(from,to){
+  // 1) 关键画面停顿
+  var h=HOLDS[holdIdx];
+  if(h&&from>=h[0]-0.0005){
+    if(Date.now()<holdUntil)return h[0];
+    holdIdx++;
+  }else if(h&&to>=h[0]){
+    holdUntil=Date.now()+h[1];
+    return h[0];
+  }
+  // 2) 人声没播完：停在 stop 处等它
+  for(var i=0;i<NARR.length;i++){
+    var c=NARR[i];
+    if(!c.started||c.released)continue;
+    if(to>c.stop&&from<=c.stop){
+      if(Date.now()>=c.releaseAt){c.released=true;if(capEl)capEl.classList.remove('on');}
+      else return c.stop;
+    }
+  }
+  return to;
+}
+
 function draw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#000'; ctx.fillRect(0,0,cw,ch);
@@ -1360,10 +1481,15 @@ function frame(now){
   var dt=Math.min(0.06,(now-last)/1000);
   last=now;
   if(playing){
-    t+=dt;
-    if(t>=DUR){t=0;evIdx=0;AE.start(0);}
-    if(audioOn)fireEvents(lastT,t);
-    lastT=t;
+    tickNarration();
+    // 慢放 + 关键停顿 + 人声闸门：时间只在 clampTime 放行时才推进
+    var nt=clampTime(t,t+dt*RATE);
+    if(nt>t){
+      t=nt;
+      if(t>=DUR){t=0;evIdx=0;lastT=0;AE.start(0);resetNarration();}
+      if(audioOn)fireEvents(lastT,t);
+      lastT=t;
+    }
   }
   draw();
   if(audioOn)AE.pump(t,playing);
@@ -1386,7 +1512,7 @@ function begin(seek){
   started=true; audioOn=true;
   AE.init(); AE.setPlaying(true);
   AE.start(seek?t:0);
-  if(!seek){t=0;evIdx=0;lastT=0;}
+  if(!seek){t=0;evIdx=0;lastT=0;resetNarration();}
   else{evIdx=0;lastT=t;}
   startEl.classList.add('hide');
   playing=true; last=0;
@@ -1398,20 +1524,24 @@ muteBtn.addEventListener('click',function(){
     if(AE.init()){audioOn=true;AE.setPlaying(playing);AE.start(t);lastT=t;evIdx=0;}
   }
   AE.setMuted(!AE.muted()); syncMute();
+  if(AE.muted())silenceNarration();
 });
 document.getElementById('replay').addEventListener('click',function(){
-  t=0;playing=true;last=0;evIdx=0;lastT=0;
+  t=0;playing=true;last=0;evIdx=0;lastT=0;resetNarration();
   if(audioOn)AE.start(0);
 });
 window.addEventListener('keydown',function(e){
   if(e.key===' '){e.preventDefault(); playing=!playing; last=0;
-    if(audioOn){AE.setPlaying(playing); if(playing)AE.start(t);}}
+    if(audioOn){AE.setPlaying(playing); if(playing)AE.start(t);}
+    // 人声跟着暂停/继续，避免画面停了旁白还在说
+    if(synth){try{playing?synth.resume():synth.pause();}catch(err){}}}
   if(e.key==='r'||e.key==='R'){
-    t=0;playing=true;last=0;evIdx=0;lastT=0; if(audioOn)AE.start(0);
+    t=0;playing=true;last=0;evIdx=0;lastT=0;resetNarration(); if(audioOn)AE.start(0);
   }
   if(e.key==='m'||e.key==='M'){
     if(!audioOn&&AE.init()){audioOn=true;AE.setPlaying(playing);AE.start(t);lastT=t;evIdx=0;}
     AE.setMuted(!AE.muted()); syncMute();
+  if(AE.muted())silenceNarration();
   }
 });
 
