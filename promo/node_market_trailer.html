@@ -459,10 +459,10 @@ var WR={x:200,y:48,w:1200,h:704};
 
 var PLUGINS=[
   {name:'魔方绑定',author:'詹康明',ver:'v2.0.0',node:'rubikCubeNode',id:'0x00141488',
-   char:'魔',accent:'#2f9187',loaded:true,fav:true,
+   char:'魔',accent:'#2f9187',loaded:true,fav:true,auto:true,
    desc:['程序化生成任意尺寸的魔方绑定：每层独立控','制器、90°吸附提交、自动配色。点「运行」会','加载节点并生成绑定。']},
   {name:'通用附着版卷轴',author:'詹康明',ver:'v1.0.1',node:'scrollMarketNode',id:'0x00151502',
-   char:'通',accent:'#2b7d76',loaded:false,fav:true,
+   char:'通',accent:'#2b7d76',loaded:false,fav:true,auto:false,
    desc:['打开通用附着版卷轴窗口。每次点「运行」都','会先卸载，再重新加载插件和窗口模块，改完','代码不用重启 Maya。']},
 ];
 
@@ -616,18 +616,12 @@ function sceneMarket(t){
   for(var i=0;i<PLUGINS.length;i++){
     var cx3=gx+i*(cw2+gap);
     var cp=easeOutBack(lin(t,12.9+i*0.1,13.8+i*0.1));
-    PLUGINS[i].auto=false;
     drawCard(cx3,gy,cw2,ch2,cp,PLUGINS[i],base,0);
   }
 
-  // 第一张卡：开机自动加载开关被拨动
-  var tg=easeInOut(lin(t,14.2,14.7));
-  if(tg>0){
-    var pl=PLUGINS[0];
-    uiSwitch(gx+16,gy+176,tg>0.5,base);
-    txt('开机自动加载',gx+56,gy+189,10.5,'#a8aeb6',base,'left',400,0.3,SANS);
-    if(tg>0.5)glow(gx+32,gy+184,30,'rgba(63,127,224,0.5)',base*0.3);
-  }
+  // 第一张卡：开关已是开启状态，光标点一下做视觉强调
+  var tg=lin(t,14.2,14.75);
+  if(tg>0&&tg<1)ringPulse(gx+32,gy+184.5,9,30,tg,'#8dbaff',base*0.65,1.5);
 
   // 光标移向「运行」并点击
   var R1=WR;
