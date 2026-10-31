@@ -24,6 +24,10 @@ NODE_INFO 示例（写在插件文件顶部即可）::
 
 没有 NODE_INFO 时，会自动从模块文档字符串、MFnPlugin 的
 vendor/version、registerNode/registerCommand 的参数里推导。
+
+可选字段 scene_node（缺省 = True）：工具类插件的节点不进场景文件时
+填 False（或 "不含节点"）。保存场景时不会把它写进 fileInfo 需求清单，
+别人打开该文件也不会被提示安装这个插件。
 """
 
 from __future__ import absolute_import, unicode_literals
@@ -103,6 +107,28 @@ def node_id_hex(value):
     if value is None:
         return ""
     return "0x%08X" % value
+
+
+_SCENE_NODE_FALSE_WORDS = (
+    "false", "no", "0", "none", "off",
+    "不含节点", "无节点", "不写入", "不进场景",
+)
+
+
+def as_scene_node(value):
+    """解析 NODE_INFO / 在线目录里的 scene_node 字段。
+
+    缺省、空值、无法识别的值都按 True（节点会进场景文件）处理；
+    只有明确填 False / "不含节点" 这类值才算工具类插件。
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return True
+    return text not in _SCENE_NODE_FALSE_WORDS
 
 
 def _unique(values):
@@ -247,6 +273,7 @@ class NodePlugin(object):
         self.icon = ""
         self.github = ""
         self.plugin_name = ""
+        self.scene_node = True
 
     @property
     def node_id_text(self):
@@ -282,7 +309,7 @@ class NodePlugin(object):
         fields = (
             "path", "folder", "folder_id", "title", "description", "author", "version",
             "node_name", "node_id", "node_names", "commands", "tags", "category", "run",
-            "icon", "github", "plugin_name",
+            "icon", "github", "plugin_name", "scene_node",
         )
         data = {}
         for name in fields:
@@ -503,6 +530,7 @@ def parse_plugin_file(path, folder_id=None):
         item.run = to_text(meta.get("run")).strip()
         item.github = to_text(meta.get("github") or meta.get("homepage")).strip()
         item.category = to_text(meta.get("category")).strip()
+        item.scene_node = as_scene_node(meta.get("scene_node"))
         tags = meta.get("tags") or []
         if isinstance(tags, STRING_TYPES):
             tags = [tags]
