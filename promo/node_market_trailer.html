@@ -19,7 +19,7 @@
   #mute{right:112px;min-width:76px;text-align:center}
   #hint{position:fixed;left:26px;bottom:28px;z-index:9;color:#3f4653;
     font:11px/1.5 "Cascadia Mono",Consolas,"Microsoft YaHei",monospace;letter-spacing:.8px;user-select:none}
-  #cap{position:fixed;left:50%;bottom:16%;z-index:8;transform:translateX(-50%) translateY(10px);
+  #cap{position:fixed;left:50%;bottom:13%;z-index:8;transform:translateX(-50%) translateY(10px);
     max-width:min(900px,84vw);padding:11px 24px;border-radius:10px;text-align:center;
     background:rgba(8,10,14,.62);border:1px solid rgba(255,255,255,.08);
     color:#e8edf5;font:15px/1.85 "Microsoft YaHei","PingFang SC",sans-serif;letter-spacing:1.4px;
@@ -509,14 +509,15 @@ function uiShell(t,alpha,tab,opt){
   txt('作者 詹康明',px+124,R.y+39,11,'#8d949c',alpha,'left',400,0.5,SANS);
 
   // 窗口按钮
-  var bx=R.x+w-352;
+  var bx=R.x+w-372;
   uiBtn(bx,R.y+19,88,29,'导入插件',alpha,false,null,'▾');
   uiBtn(bx+96,R.y+19,52,29,'更新',alpha);
   uiBtn(bx+156,R.y+19,52,29,'刷新',alpha);
   uiBtn(bx+216,R.y+19,64,29,'清缓存',alpha);
-  txt('—',R.x+w-30,R.y+35,13,'#9aa1a9',alpha,'center',400);
-  txt('▢',R.x+w-52,R.y+35,12,'#9aa1a9',alpha,'center',400);
-  txt('✕',R.x+w-74,R.y+35,12,'#9aa1a9',alpha,'center',400);
+  // 系统窗口按钮：最小化 → 最大化 → 关闭，顺序与真实窗口一致
+  txt('—',R.x+w-72,R.y+34,13,'#9aa1a9',alpha,'center',400);
+  txt('▢',R.x+w-50,R.y+34,12,'#9aa1a9',alpha,'center',400);
+  txt('✕',R.x+w-27,R.y+34,12,'#9aa1a9',alpha,'center',400);
 
   // 副标题
   txt('以 Maya 节点为单位的插件市场：识别插件目录里的节点，自动生成启动按钮',
