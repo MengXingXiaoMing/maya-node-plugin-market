@@ -102,13 +102,15 @@ var ICON=new Image(); ICON.src=ICON_SRC;
 
 var canvas=document.getElementById('stage'),ctx=canvas.getContext('2d'),bar=document.getElementById('bar');
 var cw=0,ch=0,vs=1,vx=0,vy=0;
+// 导出视频的高度（?h=2160 为 4K，默认），宽度按 16:9 推算
+var EXPORT_H=2160;
 function resize(){
   var dpr=Math.min(window.devicePixelRatio||1,2);
-  // 导出视频时固定 1280×720，不受窗口尺寸影响（16:9 与 1600×900 同比例）
-  if(exportMode){cw=1280;ch=720;}
+  // 导出视频时按 EXPORT_H 渲染，不受窗口尺寸影响（16:9 与 1600×900 同比例）
+  if(exportMode){ch=EXPORT_H; cw=Math.round(ch*W/H);}
   else{cw=Math.floor(window.innerWidth*dpr); ch=Math.floor(window.innerHeight*dpr);}
   canvas.width=cw; canvas.height=ch;
-  if(exportMode){canvas.style.width='1280px'; canvas.style.height='720px';}
+  if(exportMode){canvas.style.width=(cw/4)+'px'; canvas.style.height=(ch/4)+'px';}
   else{canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px';}
   vs=Math.min(cw/W,ch/H); vx=(cw-W*vs)/2; vy=(ch-H*vs)/2;
 }
@@ -1366,9 +1368,13 @@ var zhVoice=null,cueUtter=null;
 // ---- MP4 导出模式（?export=1）：录 canvas + 音频，人声用预生成的语音文件 ----
 var exportMode=qs.get('export')==='1';
 var narrBufs=[],narrBus=null,narrSrc=null,mixDest=null,recorder=null,recChunks=[],recDone=false;
-var capText='',capOn=false;
+var capText='',capOn=false,exportFrames=0;
 for(var ni=0;ni<NARR.length;ni++)NARR[ni].i=ni;
-if(exportMode){playing=false; resize();}   // 等语音文件加载完再开始，避免前几秒漏掉；画布锁定 1280×720
+if(exportMode){
+  // 导出分辨率高度：?h=2160(4K，默认) / 1440 / 720
+  EXPORT_H=Number(qs.get('h'))||2160;
+  playing=false; resize();   // 等语音文件加载完再开始，避免前几秒漏掉
+}
 
 function loadNarration(){
   var ac=AE.ctx();
@@ -1393,11 +1399,16 @@ function startRecording(){
   mixDest.stream.getAudioTracks().forEach(function(tr){stream.addTrack(tr);});
   var mime='',types=['video/mp4;codecs="avc1.42E01E,mp4a.40.2"','video/mp4','video/webm;codecs=vp9,opus'];
   for(var i=0;i<types.length;i++){if(MediaRecorder.isTypeSupported(types[i])){mime=types[i];break;}}
+  // 码率随分辨率等比放大（720p 约 3.2Mbps，4K 上限 20Mbps）
+  var px=cw*ch,pix=px/(1280*720);
+  var vbps=Math.round(Math.min(20000000,3200000*pix));
   try{
-    recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:3200000,audioBitsPerSecond:112000});
+    recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:vbps,audioBitsPerSecond:112000});
   }catch(e){recorder=null;return;}
   recChunks=[];
-  recorder.ondataavailable=function(e){if(e.data&&e.data.size)recChunks.push(e.data);};
+  recorder.ondataavailable=function(e){
+    if(e.data&&e.data.size){recChunks.push(e.data);window.__exportBytes=recChunks.reduce(function(a,b){return a+b.size;},0);}
+  };
   recorder.onstop=function(){
     var type=recorder.mimeType||'video/mp4';
     var ext=type.indexOf('mp4')>=0?'mp4':'webm';
@@ -1421,6 +1432,7 @@ window.__exportChunk=function(start,len){
 function finishExport(){
   if(recDone)return;
   recDone=true; playing=false;
+  window.__exportFrames=exportFrames;
   if(narrSrc){try{narrSrc.stop();}catch(e){}narrSrc=null;}
   if(synth){try{synth.cancel();}catch(e){}}
   if(recorder&&recorder.state!=='inactive')setTimeout(function(){try{recorder.stop();}catch(e){}},700);
@@ -1598,6 +1610,7 @@ function frame(now){
     }
   }
   draw();
+  if(exportMode){exportFrames++;if(!(exportFrames%30)){window.__exportFrames=exportFrames;window.__exportT=t;}}
   if(audioOn)AE.pump(t,playing);
   if(audioOn){var s=AE.state(); if(s!==lastAcState){lastAcState=s;syncMute();}}
   bar.style.width=(t/DUR*100)+'%';
