@@ -166,6 +166,8 @@ class CatalogEntry(object):
         self.sha256 = node_market.to_text(self.raw.get("sha256") or self.raw.get("digest"))
         self.icon = node_market.to_text(self.raw.get("icon"))
         self.run = node_market.to_text(self.raw.get("run"))
+        # scene_node 缺省 = True；目录里标 False 的工具类插件不做场景缺失提示
+        self.scene_node = node_market.as_scene_node(self.raw.get("scene_node"))
         self.github = node_market.to_text(self.raw.get("github")) or (
             "https://github.com/%s" % self.repo if self.repo else "")
         self.maya_versions = [node_market.to_text(v) for v in (self.raw.get("maya_versions") or [])]
@@ -585,7 +587,7 @@ def build_submission_entry(plugin, repo="", subpath=None, entry_file=None):
         manifest.get("entry"))
     if not entry_file:
         entry_file = os.path.basename(getattr(plugin, "path", "") or "")
-    return {
+    entry = {
         "name": plugin.title or "",
         "description": plugin.description or "",
         "author": plugin.author or "",
@@ -602,6 +604,10 @@ def build_submission_entry(plugin, repo="", subpath=None, entry_file=None):
         "added": today,
         "updated": today,
     }
+    # 只有明确声明「节点不进场景文件」时才写进目录条目，缺省不写字段（= True）
+    if getattr(plugin, "scene_node", True) is False:
+        entry["scene_node"] = False
+    return entry
 
 
 def submission_url(entry):
