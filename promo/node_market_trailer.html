@@ -104,9 +104,12 @@ var canvas=document.getElementById('stage'),ctx=canvas.getContext('2d'),bar=docu
 var cw=0,ch=0,vs=1,vx=0,vy=0;
 function resize(){
   var dpr=Math.min(window.devicePixelRatio||1,2);
-  cw=Math.floor(window.innerWidth*dpr); ch=Math.floor(window.innerHeight*dpr);
+  // 导出视频时固定 1280×720，不受窗口尺寸影响（16:9 与 1600×900 同比例）
+  if(exportMode){cw=1280;ch=720;}
+  else{cw=Math.floor(window.innerWidth*dpr); ch=Math.floor(window.innerHeight*dpr);}
   canvas.width=cw; canvas.height=ch;
-  canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px';
+  if(exportMode){canvas.style.width='1280px'; canvas.style.height='720px';}
+  else{canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px';}
   vs=Math.min(cw/W,ch/H); vx=(cw-W*vs)/2; vy=(ch-H*vs)/2;
 }
 window.addEventListener('resize',resize); resize();
@@ -293,10 +296,10 @@ function grain(){
 // 第一段：五个真实痛点（0 – 8.0s）
 // =====================================================================
 var BEATS=[
-  {no:'01',tag:'交付',t1:'场景发过去了，插件没发过去',t2:'对方打开先看到一片 unknown，再回头找你问安装包'},
+  {no:'01',tag:'交付',t1:'场景发过去了，插件没发过去',t2:'对方打开，节点类型全变成 unknown，再回头找你问安装包'},
   {no:'02',tag:'版本',t1:'同一个插件，三个版本在飞',t2:'网盘、群文件、桌面各存一份，没人知道哪个才是最新'},
-  {no:'03',tag:'依赖',t1:'装上了，却报 No module named',t2:'节点依赖散在别人电脑上，缺一个包整条绑定就断'},
-  {no:'04',tag:'加载',t1:'节点在，场景还是错的',t2:'插件躺在硬盘里没有 load，绑定结果和作者看到的完全不同'},
+  {no:'03',tag:'依赖',t1:'对方装上了，脚本编辑器却报错',t2:'节点依赖没跟着插件走，换台电脑就加载失败'},
+  {no:'04',tag:'加载',t1:'节点在，场景还是错的',t2:'插件躺在硬盘里没加载，绑定结果和作者看到的完全不同'},
   {no:'05',tag:'检索',t1:'想找一个节点，只能靠问人',t2:'没有目录、没有版本、没有作者，工具只在群里口口相传'}
 ];
 var BEAT_LEN=1.6;
@@ -312,12 +315,12 @@ function beatArt0(a,x,y){
   dot(x-70,y-24,4,D.red,a*0.9);
   rrect(x-38,y-96,232,52,10,'rgba(74,134,232,0.09)','rgba(74,134,232,0.42)',1,a);
   txt('“插件也发我一下”',x-22,y-64,12,'#cfe0ff',a,'left',400);
-  var bad=['unknownTransform','unknownDag','unknown'];
+  var bad=[['rubikCubeCtrl','unknown'],['rubikCubeGeo','unknown'],['rubikRig','unknown']];
   for(var i=0;i<3;i++){
     var by=y+20+i*44;
     rrect(x-200,by,300,34,6,'rgba(224,85,97,0.06)','rgba(224,85,97,0.35)',1,a*0.9);
-    txt(bad[i],x-186,by+21,11,'#e8b4ba',a*0.9,'left',400);
-    dot(x+82,by+17,3.5,D.red,a*0.9);
+    txt(bad[i][0],x-186,by+21,11,'#e8b4ba',a*0.9,'left',400);
+    txt(bad[i][1],x+88,by+21,9.5,'#e05561',a*0.9,'right',400,0.5);
   }
 }
 function beatArt1(a,x,y){
@@ -340,14 +343,16 @@ function beatArt1(a,x,y){
 }
 function beatArt2(a,x,y){
   rrect(x-206,y-108,412,196,10,'rgba(10,13,17,0.92)','rgba(255,255,255,0.10)',1,a);
-  txt('Python',x-190,y-84,9,D.faint,a*0.7,'left',500,2);
-  txt('> import _lib',x-190,y-56,12,'#a9b6c8',a,'left',400);
-  txt('Traceback (most recent call last):',x-190,y-26,11,D.faint,a*0.8,'left',400);
-  txt('ModuleNotFoundError:',x-190,y+2,12,'#f0a0a8',a,'left',500);
-  txt("  No module named '_lib'",x-190,y+24,12,'#f0a0a8',a,'left',500);
+  // 复刻 Maya 的 Script Editor：Python 插件加载失败时，报错就出现在这里
+  txt('Script Editor',x-190,y-84,9.5,D.faint,a*0.8,'left',500,1.6);
+  line(x-206,y-70,x+206,y-70,'rgba(255,255,255,0.08)',a*0.8,1);
+  txt('scroll_market_node.py',x-190,y-46,10,'#a9b6c8',a*0.9,'left',400,0.2);
+  txt('// Error: ModuleNotFoundError: file',x-190,y-14,10.5,'#f0a0a8',a,'left',400,0.2);
+  txt('C:/…/scroll_market_node.py line 6:',x-190,y+6,10.5,'#f0a0a8',a,'left',400,0.2);
+  txt("No module named '_lib' //",x-190,y+26,10.5,'#f0a0a8',a,'left',500,0.2);
   line(x-206,y+44,x+206,y+44,'rgba(255,255,255,0.09)',a*0.8,1);
-  txt('别人电脑上缺的就是这一行',x-190,y+68,11,D.faint,a*0.85,'left',400);
-  dot(x+186,y+6,4,D.red,a*0.85);
+  txt('别人电脑上缺的就是这个包',x-190,y+68,11,D.faint,a*0.85,'left',400);
+  dot(x+186,y+22,4,D.red,a*0.85);
 }
 function beatArt3(a,x,y){
   var nodes=[[x-150,y-40,D.blue],[x+40,y-60,D.teal],[x-40,y+52,D.purple]];
@@ -364,7 +369,7 @@ function beatArt3(a,x,y){
     }
   }
   for(var k=0;k<nodes.length;k++)hexNode(nodes[k][0],nodes[k][1],20,nodes[k][2],a*0.9,0.14,1);
-  chip('loaded = false',x-110,y+112,D.red,a*0.95,'rgba(224,85,97,0.10)');
+  chip('插件未加载',x-110,y+112,D.red,a*0.95,'rgba(224,85,97,0.10)');
   txt('节点都在，连接是错的',x+10,y+126,12,D.red,a*0.8,'left',400);
 }
 function beatArt4(a,x,y){
@@ -480,14 +485,22 @@ function uiSwitch(x,y,on,alpha){
   dot(x+(on?23:9),y+8.5,6,on?U.accent:'#8d949c',alpha);
 }
 
-function uiTabs(x,y,active,alpha){
-  var tabs=['发现','在线','收藏','已加载','设置'],tx=x;
-  for(var i=0;i<tabs.length;i++){
-    var tw2=measure(tabs[i],13,600,0.5,SANS),act=i===active;
-    if(act)rrect(tx-11,y-19,tw2+22,30,6,'rgba(63,127,224,0.13)',null,0,alpha);
-    txt(tabs[i],tx,y,13,act?'#7cb0ff':'#8d949c',alpha,'left',act?600:400,0.5,SANS);
-    tx+=tw2+36;
+// 标签组：与真实界面一致（深色容器 + 3px 内边距 + 每个按钮左右 18px + 2px 间距）
+function uiTabs(right,cy,active,alpha){
+  var tabs=['发现','在线','收藏','已加载','设置'],pad=18,gap=2,mg=3,th=32;
+  var bw=[],i,total=mg*2;
+  for(i=0;i<tabs.length;i++){bw[i]=measure(tabs[i],12.5,500,0.5,SANS)+pad*2;total+=bw[i];}
+  total+=gap*(tabs.length-1);
+  var x=right-total;
+  rrect(x,cy-th/2,total,th,10,'#1b1d22','rgba(255,255,255,0.13)',1,alpha);
+  var tx=x+mg;
+  for(i=0;i<tabs.length;i++){
+    var act=i===active;
+    if(act)rrect(tx,cy-11,bw[i],22,7,'rgba(91,157,255,0.18)',null,0,alpha);
+    txt(tabs[i],tx+bw[i]/2,cy+4,12.5,act?'#cfe0ff':'#9aa1ad',alpha,'center',act?500:400,0.5,SANS);
+    tx+=bw[i]+gap;
   }
+  return {x:x,w:total};
 }
 
 function uiShell(t,alpha,tab,opt){
@@ -523,15 +536,16 @@ function uiShell(t,alpha,tab,opt){
   txt('以 Maya 节点为单位的插件市场：识别插件目录里的节点，自动生成启动按钮',
       R.x+28,R.y+92,11.5,'#9aa1a9',alpha,'left',400,0.3,SANS);
 
+  // 右侧标签组（右侧留白 24px，和真实窗口边距一致）
+  var tb=uiTabs(R.x+w-24,R.y+126,tab,alpha);
+
   // 搜索框
-  var sx=R.x+28,sy=R.y+106,sw=w-28*2-286,sh=40;
+  var sx=R.x+28,sy=R.y+106,sw=tb.x-13-sx,sh=40;
   rrect(sx,sy,sw,sh,8,U.input,opt.focus?'#3f7fe0':'rgba(255,255,255,0.12)',1.2,alpha);
   dot(sx+20,sy+21,5.2,'rgba(255,255,255,0.30)',alpha);
   line(sx+23,sy+24,sx+27,sy+28,'rgba(255,255,255,0.30)',alpha,1.4);
   txt(opt.search||'搜索插件 / 节点 / 作者 / 序号',sx+40,sy+25,12,
       opt.search?'#d7dde4':'#7d848c',alpha,'left',400,0.4,SANS);
-
-  uiTabs(R.x+w-268,R.y+130,tab,alpha);
 
   // 标签行
   var ty=R.y+158;
@@ -704,7 +718,7 @@ function sceneInstall(t){
   var cy=dv+82;
   micro('环境',dx+18,cy,base*easeOut(lin(t,17.6,18.1)),'#7d848c');
   var cxp=dx+18;
-  var chips=[['自带 _lib',U.green,'rgba(65,168,107,0.10)'],['无第三方包',U.accent,'rgba(63,127,224,0.10)'],
+  var chips=[['自带依赖',U.green,'rgba(65,168,107,0.10)'],['无第三方包',U.accent,'rgba(63,127,224,0.10)'],
              ['Maya 2022–2025','#a3aab2','rgba(255,255,255,0.04)']];
   for(var j=0;j<chips.length;j++){
     var ca=base*easeOut(lin(t,17.7+j*0.1,18.2+j*0.1));
@@ -716,8 +730,8 @@ function sceneInstall(t){
   var dtA=base*easeOut(lin(t,18.0,18.5));
   rrect(dx+18,dy2,mw-36,58,6,'rgba(255,255,255,0.025)','rgba(255,255,255,0.08)',1,dtA);
   hexNode(dx+38,dy2+29,10,U.accent,dtA,0.18,1);
-  txt('nodes/_lib',dx+56,dy2+26,10.5,'#cfd5dc',dtA,'left',400,0,SANS);
-  txt('已随插件打包，不会出现 No module named',dx+56,dy2+44,9.5,'#8d949c',dtA,'left',400,0,SANS);
+  txt('_lib · 随节点打包',dx+56,dy2+26,10.5,'#cfd5dc',dtA,'left',400,0,SANS);
+  txt('已随插件打包，换台电脑也不会缺依赖',dx+56,dy2+44,9.5,'#8d949c',dtA,'left',400,0,SANS);
   txt('✓',dx+mw-36,dy2+34,12,U.green,dtA,'right',600);
 
   // 按钮
@@ -763,7 +777,7 @@ function sceneInstall(t){
     txt('custom_commands/nodes/',rx+46,ly+52,10,'#a3aab2',ta*base,'left',400,0,SANS);
     line(rx+18,ly+62,rx+422,ly+62,'rgba(255,255,255,0.08)',ta*base,1);
     hexNode(rx+30,ly+86,9,U.accent,ta*base,0.18,1);
-    txt('0x00141488/rubikCubeNode.py',rx+48,ly+90,10,'#cfd5dc',ta*base,'left',400,0,SANS);
+    txt('0x00141488/rubikCube.py',rx+48,ly+90,10,'#cfd5dc',ta*base,'left',400,0,SANS);
     var lw2=measure('loaded',9.5,400)+14;
     rrect(rx+422-lw2,ly+76,lw2,20,4,'rgba(65,168,107,0.10)','rgba(65,168,107,0.5)',1,ta*base);
     txt('loaded',rx+422-lw2/2,ly+90,9.5,U.green,ta*base,'center',400,0,SANS);
@@ -1112,7 +1126,7 @@ function sceneFinale(t){
 // 音频：程序化配乐 + 音效（Web Audio，无外部文件）
 // =====================================================================
 var AE=(function(){
-  var ac=null,master=null,musicBus=null,sfxBus=null,reverb=null,delay=null,noiseBuf=null;
+  var ac=null,master=null,musicBus=null,sfxBus=null,reverb=null,delay=null,noiseBuf=null,comp=null;
   var ready=false,muted=false,t0=null,nextStep=0;
   var BPM=84,beat=60/BPM,bar=beat*4,step=beat/2;
   var CHORDS=[
@@ -1141,7 +1155,7 @@ var AE=(function(){
     var AC=window.AudioContext||window.webkitAudioContext;
     if(!AC)return false;
     ac=new AC();
-    var comp=ac.createDynamicsCompressor();
+    comp=ac.createDynamicsCompressor();
     comp.threshold.value=-18; comp.knee.value=18; comp.ratio.value=3;
     comp.attack.value=0.006; comp.release.value=0.25;
     comp.connect(ac.destination);
@@ -1312,6 +1326,9 @@ var AE=(function(){
     start:function(vt){if(ac){t0=ac.currentTime-vt;nextStep=Math.ceil(vt/step)*step;}},
     setPlaying:function(on){if(musicBus)musicBus.gain.setTargetAtTime(on?0.34:0,ac.currentTime,0.2);},
     state:function(){return ac?ac.state:'none';},
+    ctx:function(){return ac;},
+    // 导出视频时把总输出同时接一份到 MediaStream，人声与配乐一起录进去
+    capture:function(dest){if(comp&&dest)comp.connect(dest);},
     pump:pump,fire:fire
   };
 })();
@@ -1346,6 +1363,69 @@ var capEl=document.getElementById('cap');
 var synth=window.speechSynthesis||null;
 var zhVoice=null,cueUtter=null;
 
+// ---- MP4 导出模式（?export=1）：录 canvas + 音频，人声用预生成的语音文件 ----
+var exportMode=qs.get('export')==='1';
+var narrBufs=[],narrBus=null,narrSrc=null,mixDest=null,recorder=null,recChunks=[],recDone=false;
+var capText='',capOn=false;
+for(var ni=0;ni<NARR.length;ni++)NARR[ni].i=ni;
+if(exportMode){playing=false; resize();}   // 等语音文件加载完再开始，避免前几秒漏掉；画布锁定 1280×720
+
+function loadNarration(){
+  var ac=AE.ctx();
+  var base=(qs.get('narr')||'narr/');
+  return Promise.all(NARR.map(function(c,i){
+    return fetch(base+'c'+i+'.mp3').then(function(r){
+      if(!r.ok)throw new Error('http '+r.status);
+      return r.arrayBuffer();
+    }).then(function(ab){
+      return new Promise(function(res,rej){ac.decodeAudioData(ab,res,rej);});
+    }).then(function(buf){narrBufs[i]=buf;}).catch(function(){narrBufs[i]=null;});
+  }));
+}
+
+function startRecording(){
+  var ac=AE.ctx();
+  if(!ac||!window.MediaRecorder)return;
+  mixDest=ac.createMediaStreamDestination();
+  AE.capture(mixDest);
+  narrBus=ac.createGain(); narrBus.gain.value=0.95; narrBus.connect(mixDest);
+  var stream=canvas.captureStream(30);
+  mixDest.stream.getAudioTracks().forEach(function(tr){stream.addTrack(tr);});
+  var mime='',types=['video/mp4;codecs="avc1.42E01E,mp4a.40.2"','video/mp4','video/webm;codecs=vp9,opus'];
+  for(var i=0;i<types.length;i++){if(MediaRecorder.isTypeSupported(types[i])){mime=types[i];break;}}
+  try{
+    recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:3200000,audioBitsPerSecond:112000});
+  }catch(e){recorder=null;return;}
+  recChunks=[];
+  recorder.ondataavailable=function(e){if(e.data&&e.data.size)recChunks.push(e.data);};
+  recorder.onstop=function(){
+    var type=recorder.mimeType||'video/mp4';
+    var ext=type.indexOf('mp4')>=0?'mp4':'webm';
+    window.__exportBlob=new Blob(recChunks,{type:type});
+    window.__exportDone={size:window.__exportBlob.size,type:type,ext:ext};
+  };
+  recorder.start(2000);
+}
+
+// 供导出脚本分块取回视频数据（浏览器端不落盘）
+window.__exportChunk=function(start,len){
+  var b=window.__exportBlob;
+  if(!b)return Promise.resolve('');
+  return b.slice(start,start+len).arrayBuffer().then(function(ab){
+    var u=new Uint8Array(ab),s='',i;
+    for(i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,Math.min(i+32768,u.length)));
+    return btoa(s);
+  });
+};
+
+function finishExport(){
+  if(recDone)return;
+  recDone=true; playing=false;
+  if(narrSrc){try{narrSrc.stop();}catch(e){}narrSrc=null;}
+  if(synth){try{synth.cancel();}catch(e){}}
+  if(recorder&&recorder.state!=='inactive')setTimeout(function(){try{recorder.stop();}catch(e){}},700);
+}
+
 function pickVoice(){
   if(!synth||!synth.getVoices)return;
   var all=[];
@@ -1371,9 +1451,22 @@ if(synth){
 
 function startCue(c){
   c.started=true; c.released=false;
-  if(capEl){capEl.textContent=c.text;capEl.classList.add('on');}
+  capText=c.text; capOn=true;
   // 兜底时长：语音引擎不回调时，也保证停够时间再走
-  c.releaseAt=Date.now()+1000+c.text.length*260;
+  c.releaseAt=Date.now()+900+c.text.length*260;
+  if(exportMode){
+    // 导出视频：播预生成的中文语音，并复用它的真实时长当闸门
+    var b=narrBufs[c.i],ac=AE.ctx();
+    if(b&&narrBus&&ac){
+      try{
+        var s=ac.createBufferSource(); s.buffer=b; s.connect(narrBus); s.start();
+        narrSrc=s;
+        c.releaseAt=Date.now()+b.duration*1000+500;
+      }catch(e){}
+    }
+    return;
+  }
+  if(capEl){capEl.textContent=c.text;capEl.classList.add('on');}
   if(!synth||!audioOn||AE.muted())return;   // 静音/无语音引擎：只出字幕，按字数停留
   try{synth.cancel();}catch(e){}
   var u=new SpeechSynthesisUtterance(c.text);
@@ -1404,6 +1497,9 @@ function resetNarration(){
   holdIdx=0;holdUntil=0;
   if(synth&&cueUtter){try{synth.cancel();}catch(e){}}
   cueUtter=null;
+  if(narrSrc){try{narrSrc.stop();}catch(e){}}
+  narrSrc=null;
+  capOn=false;
   if(capEl)capEl.classList.remove('on');
 }
 
@@ -1411,10 +1507,13 @@ function silenceNarration(){
   // 静音时立刻放行当前这句，避免时间闸门空等到兜底时长
   if(synth&&cueUtter){try{synth.cancel();}catch(e){}}
   cueUtter=null;
+  if(narrSrc){try{narrSrc.stop();}catch(e){}}
+  narrSrc=null;
   for(var i=0;i<NARR.length;i++){
     var c=NARR[i];
     if(c.started&&!c.released)c.releaseAt=Date.now();
   }
+  capOn=false;
   if(capEl)capEl.classList.remove('on');
 }
 
@@ -1433,7 +1532,7 @@ function clampTime(from,to){
     var c=NARR[i];
     if(!c.started||c.released)continue;
     if(to>c.stop&&from<=c.stop){
-      if(Date.now()>=c.releaseAt){c.released=true;if(capEl)capEl.classList.remove('on');}
+      if(Date.now()>=c.releaseAt){c.released=true;capOn=false;if(capEl)capEl.classList.remove('on');}
       else return c.stop;
     }
   }
@@ -1461,6 +1560,15 @@ function draw(){
   vg.addColorStop(1,'rgba(0,0,0,0.66)');
   ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
   grain();
+  if(exportMode&&capOn&&capText)drawNarrCap(capText);
+}
+
+// 导出视频时字幕画在 canvas 上（DOM 字幕不会被录进去）
+function drawNarrCap(text){
+  var fs=20,lw=measure(text,fs,400,1.5,SANS);
+  var w=Math.min(W-160,lw+64),h=44,x=W/2-w/2,y=834;
+  rrect(x,y,w,h,10,'rgba(8,10,14,0.74)','rgba(255,255,255,0.10)',1,1);
+  txt(text,W/2,y+h/2+7,fs,'#e8edf5',1,'center',400,1.5,SANS);
 }
 
 function fireEvents(prev,cur){
@@ -1481,7 +1589,10 @@ function frame(now){
     var nt=clampTime(t,t+dt*RATE);
     if(nt>t){
       t=nt;
-      if(t>=DUR){t=0;evIdx=0;lastT=0;AE.start(0);resetNarration();}
+      if(t>=DUR){
+        if(exportMode){finishExport();return;}
+        t=0;evIdx=0;lastT=0;AE.start(0);resetNarration();
+      }
       if(audioOn)fireEvents(lastT,t);
       lastT=t;
     }
@@ -1536,11 +1647,20 @@ window.addEventListener('keydown',function(e){
   if(e.key==='m'||e.key==='M'){
     if(!audioOn&&AE.init()){audioOn=true;AE.setPlaying(playing);AE.start(t);lastT=t;evIdx=0;}
     AE.setMuted(!AE.muted()); syncMute();
-  if(AE.muted())silenceNarration();
+    if(AE.muted())silenceNarration();
   }
 });
 
 if(seekMode){startEl.classList.add('hide'); syncMute();}
+if(exportMode){
+  startEl.classList.add('hide'); syncMute();
+  if(AE.init()){
+    loadNarration().then(function(){
+      begin(false);
+      startRecording();
+    });
+  }
+}
 requestAnimationFrame(frame);
 })();
 </script>
