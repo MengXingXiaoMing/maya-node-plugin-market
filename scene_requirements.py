@@ -68,6 +68,9 @@ def match_requirements(plugin_names, entries, local_plugins=None, requirement_id
     """
     index = {}
     for entry in entries or []:
+        # 目录里标记为「不含场景节点」的工具插件，永远不作为缺失项提示
+        if not getattr(entry, "scene_node", True):
+            continue
         keys = (
             normalize_plugin_name(entry.entry),
             normalize_plugin_name(entry.node_name),
@@ -79,6 +82,8 @@ def match_requirements(plugin_names, entries, local_plugins=None, requirement_id
 
     local_index = {}
     for plugin in local_plugins or []:
+        if not getattr(plugin, "scene_node", True):
+            continue
         for key in (normalize_plugin_name(plugin.path),
                     normalize_plugin_name(getattr(plugin, "plugin_name", "")),
                     normalize_plugin_name(plugin.node_name),
@@ -119,6 +124,9 @@ def collect_requirements(plugins):
     """当前场景里真实用到的市场插件。"""
     items = []
     for plugin in plugins or []:
+        # 作者声明「节点不进场景文件」的工具类插件，不写进需求清单
+        if not getattr(plugin, "scene_node", True):
+            continue
         node_name = getattr(plugin, "node_name", "")
         if not node_name:
             continue
