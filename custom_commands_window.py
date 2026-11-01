@@ -438,6 +438,7 @@ COLORS = ["#4a86e8", "#8a6cf0", "#2fa79a", "#d08a3e", "#c95f7c", "#5a8fb8"]
 
 # 卡片固定宽度与网格间距：用于计算响应式列数（最高支持 6 列）
 CARD_WIDTH = 280
+CARD_MIN_HEIGHT = 216
 GRID_SPACING = 14
 GRID_MARGIN = 44
 MAX_COLUMNS = 6
@@ -446,10 +447,10 @@ MAX_COLUMNS = 6
 # 字体、QSS 里的 px（padding / 圆角 / min-height 等）和卡片网格的间距/宽度，
 # 让小屏幕笔记本上能把整个市场窗口收得更小；改动后立即生效，不需要重启 Maya。
 _BASE_CARD_WIDTH = CARD_WIDTH
+_BASE_CARD_MIN_HEIGHT = CARD_MIN_HEIGHT
 _BASE_GRID_SPACING = GRID_SPACING
 _BASE_GRID_MARGIN = GRID_MARGIN
 _BASE_QSS = None
-_BASE_FONT_PT = None
 # 窗口基准尺寸：缩放时按此尺寸等比放大/缩小
 _BASE_WIN_W = 1080
 _BASE_WIN_H = 700
@@ -468,23 +469,46 @@ def scale_qss(text, scale):
 def apply_ui_scale(scale, window=None):
     """整体缩放市场窗口（不影响 Maya 自身界面）。scale=1.0 为原始大小，0.2 最小、1.4 最大。
 
-    通过 QGraphicsProxyWidget 对整个界面做统一的缩放变换，保证字体、固定尺寸、
-    图标、间距等全部按同一比例缩放，整体比例始终一致。
+    缩放链路（全部基于 scale 因子，保证整体比例一致）：
+    1) 市场窗口自身字体（setFont 只作用于本窗口，不碰 QApplication 全局字体）
+    2) QSS 里所有 px 值（边框、圆角、padding、min-height 等）
+    3) 卡片网格常量（CARD_WIDTH / GRID_SPACING / GRID_MARGIN）
+    4) 窗口自身几何尺寸
+    5) 所有硬编码的控件 min/max 尺寸、iconSize、布局 spacing/margins
+       （通过 _record_base_geometry 记录的基准值按比例重设）
     """
+    global CARD_WIDTH, CARD_MIN_HEIGHT, GRID_SPACING, GRID_MARGIN, QSS
     scale = float(scale)
     if scale <= 0:
         scale = 1.0
     scale = max(UI_SCALE_MIN, min(UI_SCALE_MAX, scale))
 
-    # 1) 整个界面用 proxy 统一缩放：字体/固定尺寸/图标/间距都按同一比例，
-    #    避免「只缩放了一部分元素导致比例失调」。
-    if window is not None and getattr(window, "_scale_proxy", None) is not None:
+    # 1) 只缩放市场窗口自身的字体，不动 Maya 全局字体；
+    #    QWidget.setFont 会向子控件继承，弹窗也跟着缩放。
+    #    基准字号由 _record_base_geometry 在 scale=1.0 时记录，
+    #    避免复用已缩放窗口时把当前字号误当成基准。
+    if window is not None:
         try:
-            window._scale_proxy.setScale(scale)
+            base_pt = getattr(window, "_base_font_pt", None)
+            if base_pt is None or base_pt < 6:
+                # 兜底：基准异常小（可能是 pixelSize 模式），用 9pt
+                base_pt = 9.0
+            f = window.font()
+            f.setPointSizeF(base_pt * scale)
+            window.setFont(f)
         except Exception:
             pass
 
-    # 2) 窗口自身几何按比例缩放，保证"整个窗口"一起变
+    # 2) QSS 的 px 等比缩放
+    QSS = scale_qss(_BASE_QSS, scale)
+
+    # 3) 卡片网格的尺寸与间距同步缩放
+    CARD_WIDTH = max(160, int(round(_BASE_CARD_WIDTH * scale)))
+    CARD_MIN_HEIGHT = max(120, int(round(_BASE_CARD_MIN_HEIGHT * scale)))
+    GRID_SPACING = max(6, int(round(_BASE_GRID_SPACING * scale)))
+    GRID_MARGIN = max(16, int(round(_BASE_GRID_MARGIN * scale)))
+
+    # 4) 窗口自身几何按比例缩放
     if window is not None:
         try:
             w = max(200, int(round(_BASE_WIN_W * scale)))
@@ -493,10 +517,21 @@ def apply_ui_scale(scale, window=None):
         except Exception:
             pass
 
-    # 3) 对已经创建好的卡片，重设样式并重排（卡片在 proxy 内也跟着缩放，
-    #    这里主要保证列数计算基于缩放后的视觉宽度）
+    # 5) 对已经创建好的窗口与卡片：重设样式、缩放硬编码几何、重排列
     if window is not None:
         try:
+            window.setStyleSheet(QSS)
+            # 缩放所有控件 min/max 尺寸、iconSize、布局 spacing/margins
+            if hasattr(window, "_apply_geometry_scale"):
+                window._apply_geometry_scale(scale)
+            for card in getattr(window, "cards", []) + getattr(window, "online_cards", []) \
+                    + getattr(window, "favorite_cards", []):
+                try:
+                    card.setFixedWidth(CARD_WIDTH)
+                    card.setMinimumHeight(CARD_MIN_HEIGHT)
+                    card.setStyleSheet(QSS)
+                except Exception:
+                    pass
             if hasattr(window, "_update_columns"):
                 window._update_columns(force=True)
         except Exception:
@@ -999,7 +1034,7 @@ class PluginCard(QtWidgets.QFrame):
 
         self.setObjectName("pluginCard")
         self.setFixedWidth(CARD_WIDTH)
-        self.setMinimumHeight(216)
+        self.setMinimumHeight(CARD_MIN_HEIGHT)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
@@ -1265,7 +1300,7 @@ class OnlineCard(QtWidgets.QFrame):
 
         self.setObjectName("pluginCard")
         self.setFixedWidth(CARD_WIDTH)
-        self.setMinimumHeight(216)
+        self.setMinimumHeight(CARD_MIN_HEIGHT)
         self.setAttribute(Qt.WA_Hover, True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
@@ -2075,81 +2110,6 @@ class SubmissionDialog(QtWidgets.QDialog):
 
 
 # ---------------------------------------------------------------------------
-# 缩放容器：把整个市场界面放进 QGraphicsProxyWidget 做统一缩放，
-# 同时把鼠标事件按窗口坐标转发给 MarketWindow，保证自定义标题栏拖动
-# 与边缘缩放正常工作。
-# ---------------------------------------------------------------------------
-class _ScaleGraphicsView(QtWidgets.QGraphicsView):
-    def __init__(self, window):
-        super().__init__()
-        self._win = window
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setContentsMargins(0, 0, 0, 0)
-        # 背景与市场主色一致，缩放后内容外的区域不会露黑
-        self.setStyleSheet("background: #1f2126; border: none;")
-        self.setRenderHints(
-            QtGui.QPainter.Antialiasing
-            | QtGui.QPainter.SmoothPixmapTransform
-            | QtGui.QPainter.TextAntialiasing
-        )
-        self.viewport().setMouseTracking(True)
-
-    def _to_win(self, pos):
-        return self.viewport().mapTo(self._win, pos)
-
-    def mousePressEvent(self, event):
-        wpos = self._to_win(event.pos())
-        if event.button() == Qt.LeftButton:
-            edge = self._win._edge_at(wpos)
-            if edge:
-                self._win._resize_mode = edge
-                self._win._resize_start_geom = self._win.geometry()
-                self._win._resize_start_pos = event.globalPos()
-                event.accept()
-                return
-            if self._win._in_header(wpos) and not self._win._on_header_controls(wpos):
-                self._win._dragging = True
-                self._win._drag_pos = event.globalPos() - self._win.frameGeometry().topLeft()
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        wpos = self._to_win(event.pos())
-        if self._win._resize_mode and event.buttons() & Qt.LeftButton:
-            self._win._do_resize(event.globalPos())
-            event.accept()
-            return
-        if self._win._dragging and event.buttons() & Qt.LeftButton:
-            self._win.move(event.globalPos() - self._win._drag_pos)
-            event.accept()
-            return
-        if not (event.buttons() & Qt.LeftButton):
-            edge = self._win._edge_at(wpos)
-            if edge:
-                self.setCursor(self._win._EDGE_CURSORS[edge])
-            else:
-                self.unsetCursor()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._win._dragging = False
-        self._win._resize_mode = None
-        self._win._resize_start_geom = None
-        self._win._resize_start_pos = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        wpos = self._to_win(event.pos())
-        if self._win._in_header(wpos) and not self._win._on_header_controls(wpos):
-            self._win._toggle_maximize()
-            return
-        super().mouseDoubleClickEvent(event)
-
-
-# ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
 class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
@@ -2193,12 +2153,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
         self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
         self.scene_check = bool(settings.get("scene_check", True))
-        # 界面整体缩放：先应用再构建 UI，所有卡片/弹窗都按缩放后的尺寸生成
+        # 先在 scale=1.0 构建界面并记录基准几何，之后再应用保存的缩放比例；
+        # 这样硬编码尺寸有正确的基准值可按比例缩放。
         try:
             self.ui_scale = float(settings.get("ui_scale") or 1.0)
         except Exception:
             self.ui_scale = 1.0
-        apply_ui_scale(self.ui_scale, window=self)
         if not os.path.isdir(self.nodes_dir):
             try:
                 os.makedirs(self.nodes_dir)
@@ -2249,7 +2209,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.online_fetched_at = cached_at
 
         self._build_ui()
-        # _build_ui 里才创建 _scale_proxy，这里重新应用一次保存的缩放比例
+        # 在 scale=1.0 状态下记录所有控件/布局的基准尺寸，
+        # 之后 apply_ui_scale 会按比例重设这些尺寸
+        self._record_base_geometry()
         apply_ui_scale(self.ui_scale, window=self)
         self.refresh()
         self.switch_tab(0)
@@ -2264,8 +2226,6 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def _build_ui(self):
         central = QtWidgets.QWidget()
         central.setObjectName("marketRoot")
-        # 注意：这里不立即 setCentralWidget，而是等整个界面构建完成后，
-        # 统一包进 QGraphicsProxyWidget 做整体缩放（见 _build_ui 末尾）。
         outer = QtWidgets.QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -2441,24 +2401,116 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         status_layout.addWidget(open_dir)
         outer.addWidget(status)
 
-        # 样式表必须设在 central 上：它被包进 QGraphicsProxyWidget 后不再是
-        # 窗口的子 widget，窗口级 setStyleSheet 不会级联过来，会导致全黑。
-        central.setStyleSheet(QSS)
+        # 样式表设在窗口上（central 是窗口的直接子 widget，级联正常）
+        self.setStyleSheet(QSS)
+        self.setCentralWidget(central)
+        self._central = central
 
-        # ------------------------------------------------------------------
-        # 把整个界面包进 QGraphicsProxyWidget，用统一缩放变换实现
-        # 「整体按比例缩放」，字体/固定尺寸/图标/间距全部同比例。
-        # ------------------------------------------------------------------
-        central.adjustSize()
-        # 以基准尺寸固定内容，保证布局在缩放坐标系内稳定
-        central.resize(_BASE_WIN_W, _BASE_WIN_H)
-        self._scale_scene = QtWidgets.QGraphicsScene(self)
-        self._scale_proxy = self._scale_scene.addWidget(central)
-        self._scale_view = _ScaleGraphicsView(self)
-        self._scale_view.setScene(self._scale_scene)
-        # scene rect 跟随 central 实际尺寸，避免内容被裁剪
-        self._scale_view.setSceneRect(0, 0, central.width(), central.height())
-        self.setCentralWidget(self._scale_view)
+    # ------------------------------------------------------------------
+    # 几何基准记录与按比缩放：解决 setFixedWidth/Height、setMinimum*、
+    # layout spacing、iconSize 等硬编码像素不随缩放比例变化的问题。
+    # 思路：在 scale=1.0 构建完界面后，把所有控件/布局的尺寸记录下来；
+    # 之后每次改缩放，按比例重设这些尺寸，保证整体比例一致。
+    # ------------------------------------------------------------------
+    def _record_base_geometry(self):
+        self._base_geom = {}
+        self._base_layout = {}
+        self._base_icon = {}
+        # 在 scale=1.0 状态下记录窗口基准字号；之后 apply_ui_scale 按比例重设。
+        # 用 pointSizeF，如果字体是 pixelSize 模式（返回 -1）则换算，异常小则兜底 9pt。
+        try:
+            pt = self.font().pointSizeF()
+            if pt < 6:
+                px = self.font().pixelSize()
+                if px > 0:
+                    dpi = self.logicalDpiY() or 96
+                    pt = px * 72.0 / dpi
+                if pt < 6:
+                    pt = 9.0
+            self._base_font_pt = pt
+        except Exception:
+            self._base_font_pt = 9.0
+        for w in self.findChildren(QtWidgets.QWidget):
+            try:
+                ms = w.minimumSize()
+                xs = w.maximumSize()
+                self._base_geom[id(w)] = (
+                    ms.width(), ms.height(), xs.width(), xs.height())
+            except Exception:
+                pass
+        # 记录所有按钮/工具按钮的图标尺寸
+        for w in self.findChildren(QtWidgets.QAbstractButton):
+            try:
+                ic = w.iconSize()
+                self._base_icon[id(w)] = (ic.width(), ic.height())
+            except Exception:
+                pass
+        # 递归记录布局的 spacing / contentsMargins
+        def walk(layout):
+            if layout is None:
+                return
+            try:
+                m = layout.contentsMargins()
+                self._base_layout[id(layout)] = (
+                    layout.spacing(),
+                    m.left(), m.top(), m.right(), m.bottom())
+            except Exception:
+                pass
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item is not None and item.layout() is not None:
+                    walk(item.layout())
+        if self._central is not None and self._central.layout() is not None:
+            walk(self._central.layout())
+
+    def _apply_geometry_scale(self, scale):
+        if not getattr(self, "_base_geom", None):
+            return
+        QWIDGETSIZE_MAX = 16777215
+        for w in self.findChildren(QtWidgets.QWidget):
+            base = self._base_geom.get(id(w))
+            if base is None:
+                continue
+            min_w, min_h, max_w, max_h = base
+            try:
+                # 上限保持"无限大"语义，不参与缩放
+                new_max_w = QWIDGETSIZE_MAX if max_w >= QWIDGETSIZE_MAX else max(0, int(round(max_w * scale)))
+                new_max_h = QWIDGETSIZE_MAX if max_h >= QWIDGETSIZE_MAX else max(0, int(round(max_h * scale)))
+                w.setMinimumSize(max(0, int(round(min_w * scale))), max(0, int(round(min_h * scale))))
+                w.setMaximumSize(new_max_w, new_max_h)
+            except Exception:
+                pass
+        for w in self.findChildren(QtWidgets.QAbstractButton):
+            base = self._base_icon.get(id(w))
+            if base is None:
+                continue
+            try:
+                w.setIconSize(QtCore.QSize(
+                    max(1, int(round(base[0] * scale))),
+                    max(1, int(round(base[1] * scale)))))
+            except Exception:
+                pass
+        def walk(layout):
+            if layout is None:
+                return
+            base = self._base_layout.get(id(layout))
+            if base is not None:
+                try:
+                    sp, ml, mt, mr, mb = base
+                    layout.setSpacing(max(0, int(round(sp * scale))))
+                    layout.setContentsMargins(
+                        max(0, int(round(ml * scale))),
+                        max(0, int(round(mt * scale))),
+                        max(0, int(round(mr * scale))),
+                        max(0, int(round(mb * scale))))
+                except Exception:
+                    pass
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item is not None and item.layout() is not None:
+                    walk(item.layout())
+        if self._central is not None and self._central.layout() is not None:
+            walk(self._central.layout())
 
     # ------------------------------------------------------------------
     # 自定义标题栏：拖动 / 双击最大化 / 状态同步
@@ -2470,27 +2522,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         header = self._header_widget()
         if header is None:
             return False
-        # header 在 QGraphicsProxyWidget 内，不能直接 mapTo(self)，
-        # 改用全局坐标中转以正确穿透缩放变换。
-        top_left = self.mapFromGlobal(header.mapToGlobal(QtCore.QPoint(0, 0)))
+        top_left = header.mapTo(self, QtCore.QPoint(0, 0))
         rect = QtCore.QRect(top_left, header.size())
         return rect.contains(pos)
-
-    def _on_header_controls(self, pos):
-        """判断窗口坐标 pos 是否落在标题栏的最小化/最大化/关闭按钮上，
-        以便缩放容器把这些点击放行给按钮本身，而不是当成拖动。"""
-        for btn in (getattr(self, "min_button", None),
-                    getattr(self, "max_button", None),
-                    getattr(self, "close_button", None)):
-            if btn is None:
-                continue
-            try:
-                tl = self.mapFromGlobal(btn.mapToGlobal(QtCore.QPoint(0, 0)))
-                if QtCore.QRect(tl, btn.size()).contains(pos):
-                    return True
-            except Exception:
-                pass
-        return False
 
     def _makeMayaStandaloneWindow(self):
         # MayaQWidgetDockableMixin.show() 在窗口首次显示且 parent() 为 None 时，
@@ -5095,6 +5129,12 @@ class WindowHandle(object):
         # 那会冲刷整个应用的延迟删除队列，把 Maya 自身 UI 提前删掉导致段错误。
         window = find_existing_window()
         if window is not None:
+            # 复用已有窗口时重新应用缩放：模块重载后 QSS/卡片常量会被重置，
+            # 必须按窗口保存的 ui_scale 重刷一遍，否则样式会回到 scale=1.0。
+            try:
+                apply_ui_scale(getattr(window, "ui_scale", 1.0), window=window)
+            except Exception:
+                pass
             window.show()
             self._window = window
             window.raise_()
