@@ -466,14 +466,25 @@ def scale_qss(text, scale):
 
 
 def apply_ui_scale(scale, window=None):
-    """整体缩放市场窗口（不影响 Maya 自身界面）。scale=1.0 为原始大小，0.2 最小、1.4 最大。"""
-    global CARD_WIDTH, GRID_SPACING, GRID_MARGIN, QSS, _BASE_FONT_PT
+    """整体缩放市场窗口（不影响 Maya 自身界面）。scale=1.0 为原始大小，0.2 最小、1.4 最大。
+
+    通过 QGraphicsProxyWidget 对整个界面做统一的缩放变换，保证字体、固定尺寸、
+    图标、间距等全部按同一比例缩放，整体比例始终一致。
+    """
     scale = float(scale)
     if scale <= 0:
         scale = 1.0
     scale = max(UI_SCALE_MIN, min(UI_SCALE_MAX, scale))
 
-    # 0) 先按比例缩放窗口自身的几何尺寸，保证"整个窗口"一起变小
+    # 1) 整个界面用 proxy 统一缩放：字体/固定尺寸/图标/间距都按同一比例，
+    #    避免「只缩放了一部分元素导致比例失调」。
+    if window is not None and getattr(window, "_scale_proxy", None) is not None:
+        try:
+            window._scale_proxy.setScale(scale)
+        except Exception:
+            pass
+
+    # 2) 窗口自身几何按比例缩放，保证"整个窗口"一起变
     if window is not None:
         try:
             w = max(200, int(round(_BASE_WIN_W * scale)))
@@ -482,37 +493,10 @@ def apply_ui_scale(scale, window=None):
         except Exception:
             pass
 
-    # 1) 只缩放市场窗口自身的字体，不动 Maya 全局字体；
-    #    QWidget.setFont 会向子控件继承，弹窗也跟着缩放
+    # 3) 对已经创建好的卡片，重设样式并重排（卡片在 proxy 内也跟着缩放，
+    #    这里主要保证列数计算基于缩放后的视觉宽度）
     if window is not None:
         try:
-            cur = window.font().pointSizeF()
-            if _BASE_FONT_PT is None or cur <= 0:
-                _BASE_FONT_PT = cur if cur > 0 else 9.0
-            f = window.font()
-            f.setPointSizeF(_BASE_FONT_PT * scale)
-            window.setFont(f)
-        except Exception:
-            pass
-
-    # 2) QSS 的 px 等比缩放；卡片/弹窗后续都会用新的 QSS
-    QSS = scale_qss(_BASE_QSS, scale)
-
-    # 3) 卡片网格的尺寸与间距同步缩放
-    CARD_WIDTH = max(160, int(round(_BASE_CARD_WIDTH * scale)))
-    GRID_SPACING = max(6, int(round(_BASE_GRID_SPACING * scale)))
-    GRID_MARGIN = max(16, int(round(_BASE_GRID_MARGIN * scale)))
-
-    # 4) 对已经创建好的窗口与卡片，实时重设样式并重排
-    if window is not None:
-        try:
-            window.setStyleSheet(QSS)
-            for card in getattr(window, "cards", []) + getattr(window, "online_cards", []) \
-                    + getattr(window, "favorite_cards", []):
-                try:
-                    card.setStyleSheet(QSS)
-                except Exception:
-                    pass
             if hasattr(window, "_update_columns"):
                 window._update_columns(force=True)
         except Exception:
@@ -2091,6 +2075,80 @@ class SubmissionDialog(QtWidgets.QDialog):
 
 
 # ---------------------------------------------------------------------------
+# 缩放容器：把整个市场界面放进 QGraphicsProxyWidget 做统一缩放，
+# 同时把鼠标事件按窗口坐标转发给 MarketWindow，保证自定义标题栏拖动
+# 与边缘缩放正常工作。
+# ---------------------------------------------------------------------------
+class _ScaleGraphicsView(QtWidgets.QGraphicsView):
+    def __init__(self, window):
+        super().__init__()
+        self._win = window
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setRenderHints(
+            QtGui.QPainter.Antialiasing
+            | QtGui.QPainter.SmoothPixmapTransform
+            | QtGui.QPainter.TextAntialiasing
+        )
+        self.viewport().setMouseTracking(True)
+
+    def _to_win(self, pos):
+        return self.viewport().mapTo(self._win, pos)
+
+    def mousePressEvent(self, event):
+        wpos = self._to_win(event.pos())
+        if event.button() == Qt.LeftButton:
+            edge = self._win._edge_at(wpos)
+            if edge:
+                self._win._resize_mode = edge
+                self._win._resize_start_geom = self._win.geometry()
+                self._win._resize_start_pos = event.globalPos()
+                event.accept()
+                return
+            if self._win._in_header(wpos) and not self._win._on_header_controls(wpos):
+                self._win._dragging = True
+                self._win._drag_pos = event.globalPos() - self._win.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        wpos = self._to_win(event.pos())
+        if self._win._resize_mode and event.buttons() & Qt.LeftButton:
+            self._win._do_resize(event.globalPos())
+            event.accept()
+            return
+        if self._win._dragging and event.buttons() & Qt.LeftButton:
+            self._win.move(event.globalPos() - self._win._drag_pos)
+            event.accept()
+            return
+        if not (event.buttons() & Qt.LeftButton):
+            edge = self._win._edge_at(wpos)
+            if edge:
+                self.setCursor(self._win._EDGE_CURSORS[edge])
+            else:
+                self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._win._dragging = False
+        self._win._resize_mode = None
+        self._win._resize_start_geom = None
+        self._win._resize_start_pos = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        wpos = self._to_win(event.pos())
+        if self._win._in_header(wpos) and not self._win._on_header_controls(wpos):
+            self._win._toggle_maximize()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+# ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
 class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
@@ -2190,6 +2248,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.online_fetched_at = cached_at
 
         self._build_ui()
+        # _build_ui 里才创建 _scale_proxy，这里重新应用一次保存的缩放比例
+        apply_ui_scale(self.ui_scale, window=self)
         self.refresh()
         self.switch_tab(0)
         QtCore.QTimer.singleShot(0, self.fetch_online_catalog)
@@ -2203,7 +2263,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def _build_ui(self):
         central = QtWidgets.QWidget()
         central.setObjectName("marketRoot")
-        self.setCentralWidget(central)
+        # 注意：这里不立即 setCentralWidget，而是等整个界面构建完成后，
+        # 统一包进 QGraphicsProxyWidget 做整体缩放（见 _build_ui 末尾）。
         outer = QtWidgets.QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -2381,6 +2442,21 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
         self.setStyleSheet(QSS)
 
+        # ------------------------------------------------------------------
+        # 把整个界面包进 QGraphicsProxyWidget，用统一缩放变换实现
+        # 「整体按比例缩放」，字体/固定尺寸/图标/间距全部同比例。
+        # ------------------------------------------------------------------
+        central.adjustSize()
+        # 以基准尺寸固定内容，保证布局在缩放坐标系内稳定
+        central.resize(_BASE_WIN_W, _BASE_WIN_H)
+        self._scale_scene = QtWidgets.QGraphicsScene(self)
+        self._scale_proxy = self._scale_scene.addWidget(central)
+        self._scale_proxy.setTransformationMode(Qt.SmoothTransformation)
+        self._scale_view = _ScaleGraphicsView(self)
+        self._scale_view.setScene(self._scale_scene)
+        self._scale_view.setSceneRect(0, 0, _BASE_WIN_W, _BASE_WIN_H)
+        self.setCentralWidget(self._scale_view)
+
     # ------------------------------------------------------------------
     # 自定义标题栏：拖动 / 双击最大化 / 状态同步
     # ------------------------------------------------------------------
@@ -2391,9 +2467,27 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         header = self._header_widget()
         if header is None:
             return False
-        top_left = header.mapTo(self, QtCore.QPoint(0, 0))
+        # header 在 QGraphicsProxyWidget 内，不能直接 mapTo(self)，
+        # 改用全局坐标中转以正确穿透缩放变换。
+        top_left = self.mapFromGlobal(header.mapToGlobal(QtCore.QPoint(0, 0)))
         rect = QtCore.QRect(top_left, header.size())
         return rect.contains(pos)
+
+    def _on_header_controls(self, pos):
+        """判断窗口坐标 pos 是否落在标题栏的最小化/最大化/关闭按钮上，
+        以便缩放容器把这些点击放行给按钮本身，而不是当成拖动。"""
+        for btn in (getattr(self, "min_button", None),
+                    getattr(self, "max_button", None),
+                    getattr(self, "close_button", None)):
+            if btn is None:
+                continue
+            try:
+                tl = self.mapFromGlobal(btn.mapToGlobal(QtCore.QPoint(0, 0)))
+                if QtCore.QRect(tl, btn.size()).contains(pos):
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _makeMayaStandaloneWindow(self):
         # MayaQWidgetDockableMixin.show() 在窗口首次显示且 parent() 为 None 时，
