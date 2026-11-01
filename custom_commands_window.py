@@ -18,6 +18,7 @@ import inspect
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -441,6 +442,71 @@ GRID_SPACING = 14
 GRID_MARGIN = 44
 MAX_COLUMNS = 6
 
+# 界面整体缩放（0.7 ~ 1.4）。缩放会同时作用于全局字体、QSS 里的 px
+# （padding / 圆角 / min-height 等）和卡片网格的间距/宽度，让小屏幕笔记本
+# 上能把整个市场窗口收得更小；改动后立即生效，不需要重启 Maya。
+_BASE_CARD_WIDTH = CARD_WIDTH
+_BASE_GRID_SPACING = GRID_SPACING
+_BASE_GRID_MARGIN = GRID_MARGIN
+_BASE_QSS = None
+_BASE_FONT_PT = None
+UI_SCALE_MIN = 0.7
+UI_SCALE_MAX = 1.4
+
+
+def scale_qss(text, scale):
+    """把 QSS 里所有的数字 px 按 scale 等比放大/缩小，1px 以下保底 1px。"""
+    def _repl(m):
+        val = int(m.group(1))
+        return "%dpx" % max(1, int(round(val * scale)))
+    return re.sub(r"(\d+)px", _repl, text)
+
+
+def apply_ui_scale(scale, window=None):
+    """整体缩放市场界面。scale=1.0 为原始大小，0.7 最小、1.4 最大。"""
+    global CARD_WIDTH, GRID_SPACING, GRID_MARGIN, QSS, _BASE_FONT_PT
+    scale = float(scale)
+    if scale <= 0:
+        scale = 1.0
+    scale = max(UI_SCALE_MIN, min(UI_SCALE_MAX, scale))
+
+    # 1) 全局字体：第一次调用时记录 Maya 原始字号作为基准
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        cur = app.font().pointSizeF()
+        if _BASE_FONT_PT is None or cur <= 0:
+            _BASE_FONT_PT = cur if cur > 0 else 9.0
+        try:
+            font = app.font()
+            font.setPointSizeF(_BASE_FONT_PT * scale)
+            app.setFont(font)
+        except Exception:
+            pass
+
+    # 2) QSS 的 px 等比缩放；卡片/弹窗后续都会用新的 QSS
+    QSS = scale_qss(_BASE_QSS, scale)
+
+    # 3) 卡片网格的尺寸与间距同步缩放
+    CARD_WIDTH = max(160, int(round(_BASE_CARD_WIDTH * scale)))
+    GRID_SPACING = max(6, int(round(_BASE_GRID_SPACING * scale)))
+    GRID_MARGIN = max(16, int(round(_BASE_GRID_MARGIN * scale)))
+
+    # 4) 对已经创建好的窗口与卡片，实时重设样式并重排
+    if window is not None:
+        try:
+            window.setStyleSheet(QSS)
+            for card in getattr(window, "cards", []) + getattr(window, "online_cards", []) \
+                    + getattr(window, "favorite_cards", []):
+                try:
+                    card.setStyleSheet(QSS)
+                except Exception:
+                    pass
+            if hasattr(window, "_update_columns"):
+                window._update_columns(force=True)
+        except Exception:
+            pass
+    return scale
+
 QSS = """
 QMainWindow, #marketRoot { background: #1f2126; }
 #header { background: #24262c; border-bottom: 1px solid #34373f; }
@@ -671,6 +737,8 @@ QPushButton#envDl {
 }
 QPushButton#envDl:hover { background: #2c3038; color: #e6e9ef; border-color: #4a4f5b; }
 """
+# 原始样式表：在 QSS 定义完成后再记录，供 apply_ui_scale 缩放使用
+_BASE_QSS = QSS
 
 
 # ---------------------------------------------------------------------------
@@ -682,6 +750,7 @@ def load_settings():
         "github_url": MARKET_GITHUB_URL,
         "scene_check": True,
         "skip_env_optional": False,
+        "ui_scale": 1.0,
     }
     try:
         with io.open(user_settings_path(), "r", encoding="utf-8") as handle:
@@ -2026,7 +2095,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if os.path.isfile(ICON_PATH):
             self.setWindowIcon(QtGui.QIcon(ICON_PATH))
         self.resize(1080, 700)
-        self.setMinimumSize(720, 520)
+        # 放宽最小尺寸，让小屏笔记本也能把窗口收窄；整体大小再靠「界面缩放」调节
+        self.setMinimumSize(420, 340)
 
         # 无边框：用自定义标题栏统一深色风格，避免原生浅色标题栏与暗色 UI 割裂
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
@@ -2052,6 +2122,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
         self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
         self.scene_check = bool(settings.get("scene_check", True))
+        # 界面整体缩放：先应用再构建 UI，所有卡片/弹窗都按缩放后的尺寸生成
+        try:
+            self.ui_scale = float(settings.get("ui_scale") or 1.0)
+        except Exception:
+            self.ui_scale = 1.0
+        apply_ui_scale(self.ui_scale)
         if not os.path.isdir(self.nodes_dir):
             try:
                 os.makedirs(self.nodes_dir)
@@ -2403,8 +2479,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def _do_resize(self, global_pos):
         mode = self._resize_mode
         g = QtCore.QRect(self._resize_start_geom)
-        min_w = self.minimumWidth() or 720
-        min_h = self.minimumHeight() or 520
+        min_w = self.minimumWidth() or 420
+        min_h = self.minimumHeight() or 340
         dx = global_pos.x() - self._resize_start_pos.x()
         dy = global_pos.y() - self._resize_start_pos.y()
 
@@ -2531,6 +2607,11 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.nodes_dir = settings.get("nodes_dir") or DEFAULT_NODES_DIR
         self.github_url = settings.get("github_url") or MARKET_GITHUB_URL
         self.scene_check = bool(settings.get("scene_check", True))
+        try:
+            self.ui_scale = float(settings.get("ui_scale") or 1.0)
+        except Exception:
+            self.ui_scale = 1.0
+        apply_ui_scale(self.ui_scale, window=self)
         self.favorites = set(load_state().get("favorites") or [])
         self.refresh()
         self.notify("已切换到用户：%s" % user, True)
@@ -2867,6 +2948,36 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         links_card.layout().addWidget(self.node_id_button)
         links_card.layout().addWidget(self.github_button)
 
+        # 界面整体缩放
+        scale_card = self._settings_card(
+            "界面缩放",
+            "针对笔记本小屏：把整个市场窗口等比缩小（字体、卡片、间距一起变）。"
+            "拖动滑块立即生效，下次打开仍保持。")
+        scale_row = QtWidgets.QHBoxLayout()
+        scale_row.setSpacing(10)
+        self.scale_label = QtWidgets.QLabel()
+        self.scale_label.setObjectName("fieldValue")
+        self.scale_label.setMinimumWidth(52)
+        self.scale_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.scale_slider = QtWidgets.QSlider(Qt.Horizontal)
+        self.scale_slider.setObjectName("filterCheck")
+        self.scale_slider.setCursor(Qt.PointingHandCursor)
+        self.scale_slider.setRange(int(UI_SCALE_MIN * 100), int(UI_SCALE_MAX * 100))
+        self.scale_slider.setSingleStep(5)
+        self.scale_slider.setPageStep(10)
+        self.scale_slider.setValue(int(self.ui_scale * 100))
+        self.scale_slider.valueChanged.connect(self.on_ui_scale_changed)
+        scale_reset = QtWidgets.QPushButton("重置")
+        scale_reset.setObjectName("ghostButton")
+        scale_reset.setCursor(Qt.PointingHandCursor)
+        scale_reset.setToolTip("恢复为 100% 原始大小")
+        scale_reset.clicked.connect(lambda: self.scale_slider.setValue(100))
+        scale_row.addWidget(self.scale_slider, 1)
+        scale_row.addWidget(self.scale_label)
+        scale_row.addWidget(scale_reset)
+        scale_card.layout().addLayout(scale_row)
+        self._update_scale_label()
+
         # 场景依赖检测
         scene_card = self._settings_card(
             "场景依赖检测",
@@ -2966,6 +3077,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
 
         host_layout.addWidget(dir_card)
         host_layout.addWidget(links_card)
+        host_layout.addWidget(scale_card)
         host_layout.addWidget(scene_card)
         host_layout.addWidget(rule_card)
         host_layout.addWidget(status_card)
@@ -4266,6 +4378,21 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             save_settings(data)
         except Exception as exc:
             cmds.warning(u"保存设置失败：%s" % exc)
+
+    def _update_scale_label(self):
+        if hasattr(self, "scale_label"):
+            self.scale_label.setText("%d%%" % int(round(self.ui_scale * 100)))
+
+    def on_ui_scale_changed(self, value):
+        """设置页「界面缩放」滑块：实时缩放并持久化。"""
+        try:
+            self.ui_scale = apply_ui_scale(value / 100.0, window=self)
+            self._update_scale_label()
+            data = load_settings()
+            data["ui_scale"] = self.ui_scale
+            save_settings(data)
+        except Exception as exc:
+            cmds.warning(u"调整界面缩放失败：%s" % exc)
 
     def scene_catalog_entries(self):
         if self.online_entries:
