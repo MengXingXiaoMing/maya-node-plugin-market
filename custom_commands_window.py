@@ -450,7 +450,7 @@ _BASE_GRID_SPACING = GRID_SPACING
 _BASE_GRID_MARGIN = GRID_MARGIN
 _BASE_QSS = None
 _BASE_FONT_PT = None
-UI_SCALE_MIN = 0.7
+UI_SCALE_MIN = 0.2
 UI_SCALE_MAX = 1.4
 
 
@@ -463,23 +463,23 @@ def scale_qss(text, scale):
 
 
 def apply_ui_scale(scale, window=None):
-    """整体缩放市场界面。scale=1.0 为原始大小，0.7 最小、1.4 最大。"""
+    """整体缩放市场窗口（不影响 Maya 自身界面）。scale=1.0 为原始大小，0.2 最小、1.4 最大。"""
     global CARD_WIDTH, GRID_SPACING, GRID_MARGIN, QSS, _BASE_FONT_PT
     scale = float(scale)
     if scale <= 0:
         scale = 1.0
     scale = max(UI_SCALE_MIN, min(UI_SCALE_MAX, scale))
 
-    # 1) 全局字体：第一次调用时记录 Maya 原始字号作为基准
-    app = QtWidgets.QApplication.instance()
-    if app is not None:
-        cur = app.font().pointSizeF()
-        if _BASE_FONT_PT is None or cur <= 0:
-            _BASE_FONT_PT = cur if cur > 0 else 9.0
+    # 1) 只缩放市场窗口自身的字体，不动 Maya 全局字体；
+    #    QWidget.setFont 会向子控件继承，弹窗也跟着缩放
+    if window is not None:
         try:
-            font = app.font()
-            font.setPointSizeF(_BASE_FONT_PT * scale)
-            app.setFont(font)
+            cur = window.font().pointSizeF()
+            if _BASE_FONT_PT is None or cur <= 0:
+                _BASE_FONT_PT = cur if cur > 0 else 9.0
+            f = window.font()
+            f.setPointSizeF(_BASE_FONT_PT * scale)
+            window.setFont(f)
         except Exception:
             pass
 
@@ -2095,8 +2095,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if os.path.isfile(ICON_PATH):
             self.setWindowIcon(QtGui.QIcon(ICON_PATH))
         self.resize(1080, 700)
-        # 放宽最小尺寸，让小屏笔记本也能把窗口收窄；整体大小再靠「界面缩放」调节
-        self.setMinimumSize(420, 340)
+        # 最小约为原始的 20%，小屏笔记本可以把市场窗口收得很小
+        self.setMinimumSize(220, 160)
 
         # 无边框：用自定义标题栏统一深色风格，避免原生浅色标题栏与暗色 UI 割裂
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
@@ -2127,7 +2127,7 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
             self.ui_scale = float(settings.get("ui_scale") or 1.0)
         except Exception:
             self.ui_scale = 1.0
-        apply_ui_scale(self.ui_scale)
+        apply_ui_scale(self.ui_scale, window=self)
         if not os.path.isdir(self.nodes_dir):
             try:
                 os.makedirs(self.nodes_dir)
@@ -2479,8 +2479,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
     def _do_resize(self, global_pos):
         mode = self._resize_mode
         g = QtCore.QRect(self._resize_start_geom)
-        min_w = self.minimumWidth() or 420
-        min_h = self.minimumHeight() or 340
+        min_w = self.minimumWidth() or 220
+        min_h = self.minimumHeight() or 160
         dx = global_pos.x() - self._resize_start_pos.x()
         dy = global_pos.y() - self._resize_start_pos.y()
 
