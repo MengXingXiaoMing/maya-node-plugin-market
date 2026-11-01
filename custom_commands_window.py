@@ -2087,7 +2087,8 @@ class _ScaleGraphicsView(QtWidgets.QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.setContentsMargins(0, 0, 0, 0)
-        self.setStyleSheet("background: transparent; border: none;")
+        # 背景与市场主色一致，缩放后内容外的区域不会露黑
+        self.setStyleSheet("background: #1f2126; border: none;")
         self.setRenderHints(
             QtGui.QPainter.Antialiasing
             | QtGui.QPainter.SmoothPixmapTransform
@@ -2440,7 +2441,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         status_layout.addWidget(open_dir)
         outer.addWidget(status)
 
-        self.setStyleSheet(QSS)
+        # 样式表必须设在 central 上：它被包进 QGraphicsProxyWidget 后不再是
+        # 窗口的子 widget，窗口级 setStyleSheet 不会级联过来，会导致全黑。
+        central.setStyleSheet(QSS)
 
         # ------------------------------------------------------------------
         # 把整个界面包进 QGraphicsProxyWidget，用统一缩放变换实现
@@ -2453,7 +2456,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self._scale_proxy = self._scale_scene.addWidget(central)
         self._scale_view = _ScaleGraphicsView(self)
         self._scale_view.setScene(self._scale_scene)
-        self._scale_view.setSceneRect(0, 0, _BASE_WIN_W, _BASE_WIN_H)
+        # scene rect 跟随 central 实际尺寸，避免内容被裁剪
+        self._scale_view.setSceneRect(0, 0, central.width(), central.height())
         self.setCentralWidget(self._scale_view)
 
     # ------------------------------------------------------------------
