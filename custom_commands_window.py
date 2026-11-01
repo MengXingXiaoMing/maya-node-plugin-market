@@ -2451,7 +2451,6 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         central.resize(_BASE_WIN_W, _BASE_WIN_H)
         self._scale_scene = QtWidgets.QGraphicsScene(self)
         self._scale_proxy = self._scale_scene.addWidget(central)
-        self._scale_proxy.setTransformationMode(Qt.SmoothTransformation)
         self._scale_view = _ScaleGraphicsView(self)
         self._scale_view.setScene(self._scale_scene)
         self._scale_view.setSceneRect(0, 0, _BASE_WIN_W, _BASE_WIN_H)
