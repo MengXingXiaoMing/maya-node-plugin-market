@@ -442,14 +442,17 @@ GRID_SPACING = 14
 GRID_MARGIN = 44
 MAX_COLUMNS = 6
 
-# 界面整体缩放（0.7 ~ 1.4）。缩放会同时作用于全局字体、QSS 里的 px
-# （padding / 圆角 / min-height 等）和卡片网格的间距/宽度，让小屏幕笔记本
-# 上能把整个市场窗口收得更小；改动后立即生效，不需要重启 Maya。
+# 界面整体缩放（0.2 ~ 1.4）。缩放会同时作用于市场窗口自身的几何尺寸、
+# 字体、QSS 里的 px（padding / 圆角 / min-height 等）和卡片网格的间距/宽度，
+# 让小屏幕笔记本上能把整个市场窗口收得更小；改动后立即生效，不需要重启 Maya。
 _BASE_CARD_WIDTH = CARD_WIDTH
 _BASE_GRID_SPACING = GRID_SPACING
 _BASE_GRID_MARGIN = GRID_MARGIN
 _BASE_QSS = None
 _BASE_FONT_PT = None
+# 窗口基准尺寸：缩放时按此尺寸等比放大/缩小
+_BASE_WIN_W = 1080
+_BASE_WIN_H = 700
 UI_SCALE_MIN = 0.2
 UI_SCALE_MAX = 1.4
 
@@ -469,6 +472,15 @@ def apply_ui_scale(scale, window=None):
     if scale <= 0:
         scale = 1.0
     scale = max(UI_SCALE_MIN, min(UI_SCALE_MAX, scale))
+
+    # 0) 先按比例缩放窗口自身的几何尺寸，保证"整个窗口"一起变小
+    if window is not None:
+        try:
+            w = max(200, int(round(_BASE_WIN_W * scale)))
+            h = max(130, int(round(_BASE_WIN_H * scale)))
+            window.resize(w, h)
+        except Exception:
+            pass
 
     # 1) 只缩放市场窗口自身的字体，不动 Maya 全局字体；
     #    QWidget.setFont 会向子控件继承，弹窗也跟着缩放
@@ -2095,8 +2107,8 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         if os.path.isfile(ICON_PATH):
             self.setWindowIcon(QtGui.QIcon(ICON_PATH))
         self.resize(1080, 700)
-        # 最小约为原始的 20%，小屏笔记本可以把市场窗口收得很小
-        self.setMinimumSize(220, 160)
+        # 最小约为原始的 20%（216×140），小屏笔记本可以把市场窗口收得很小
+        self.setMinimumSize(200, 130)
 
         # 无边框：用自定义标题栏统一深色风格，避免原生浅色标题栏与暗色 UI 割裂
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
