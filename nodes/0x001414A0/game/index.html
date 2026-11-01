@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0b0c">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>锻剑纳贡</title>
+<link rel="stylesheet" href="style.css?v=20261028-31">
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div class="vignette"></div>
+  <div class="frenzy-flash" id="frenzyFlash"></div>
+  <div class="damage-flash" id="damageFlash"></div>
+
+  <!-- 顶部状态 -->
+  <div id="hud" class="hidden">
+    <div class="hud-left">
+      <div class="day-block">
+        <div class="hud-row">
+          <span class="hud-label" data-i18n="contractDay">契约日</span>
+          <span class="day-num" id="dayNum">1</span>
+          <span class="hud-dim">/ <span id="maxDayNum">21</span></span>
+        </div>
+        <div class="date-line" id="dateText">4月15日</div>
+      </div>
+      <div class="quota-block">
+        <div class="hud-row">
+          <span class="hud-label" data-i18n="tributeDue">今日贡额</span>
+          <strong class="quota-num" id="quotaNum">1,800</strong>
+          <span class="unit">G</span>
+        </div>
+        <div class="quota-bar"><i id="quotaFill"></i></div>
+        <div class="quota-sub">
+          <span data-i18n="offered">已上贡</span>
+          <b id="offeredNum">0</b> G
+          <span class="dot-sep">·</span>
+          <span data-i18n="swordsHeld">持剑</span>
+          <b id="swordCount">0</b>
+        </div>
+      </div>
+      <div class="anger-block">
+        <span class="hud-label" data-i18n="dragonAnger">巨龙怒气</span>
+        <div class="anger-pips" id="angerPips"></div>
+        <span class="merchant-chip hidden" id="merchantChip"></span>
+      </div>
+    </div>
+    <div class="hud-right">
+      <button class="hud-btn" id="btnAch" data-i18n="achBtn">成就</button>
+      <button class="hud-btn" id="btnSettings" data-i18n="settings">设置</button>
+      <button class="hud-btn" id="btnHelp" data-i18n="helpBtn">玩法</button>
+      <button class="hud-btn lang" id="btnLang">EN</button>
+      <button class="hud-btn icon" id="btnSound" aria-label="sound">
+        <svg class="s-on" viewBox="0 0 24 24"><path d="M4 9.2v5.6h3.4L12 18.6V5.4L7.4 9.2H4z" fill="currentColor"/><path d="M15.2 8.6a4.8 4.8 0 0 1 0 6.8M17.8 6a8.4 8.4 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <svg class="s-off" viewBox="0 0 24 24"><path d="M4 9.2v5.6h3.4L12 18.6V5.4L7.4 9.2H4z" fill="currentColor"/><path d="M15.4 9.6l4.4 4.8M19.8 9.6l-4.4 4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- 目标提示 -->
+  <div id="objective" class="hidden"><span class="obj-dot"></span><span id="objectiveText"></span></div>
+
+  <!-- 手持剑 -->
+  <div id="heldHud" class="held-hud hidden">
+    <span class="held-label" data-i18n="heldLabel">手持</span>
+    <strong id="heldName"></strong>
+    <span id="heldMeta"></span>
+  </div>
+
+  <!-- 已持有遗物 / 道具 -->
+  <div id="relicHud" class="relic-hud hidden"></div>
+
+  <!-- 当前增益 / 剩余次数 -->
+  <div id="buffBar" class="buff-bar hidden"></div>
+
+  <!-- 金币 -->
+  <div id="goldHud" class="hidden"><span class="coin-icon"></span><span id="goldNum">0</span><span class="gold-unit">G</span></div>
+
+  <!-- 准星 -->
+  <div id="crosshair" class="hidden"></div>
+
+  <!-- 鼠标锁定提示 -->
+  <div id="lockHint" class="lock-hint hidden"></div>
+
+  <!-- 场景交互提示 -->
+  <div id="interactPrompt" class="prompt hidden">
+    <div class="prompt-key" id="promptKey">E</div>
+    <div class="prompt-text">
+      <strong id="promptTitle"></strong>
+      <span id="promptSub"></span>
+    </div>
+    <div class="prompt-actions">
+      <button id="promptAlt" class="prompt-alt hidden"></button>
+      <button id="promptGo" class="prompt-go"></button>
+    </div>
+  </div>
+
+  <!-- 第一人称锻造面板 -->
+  <div id="forgeUI" class="forge-ui hidden">
+    <div class="forge-panel">
+      <div class="fp-top">
+        <div class="fp-title">
+          <span class="fp-kicker" data-i18n="forgingNow">正在锻造</span>
+          <h2 id="fpName">锈蚀长剑</h2>
+        </div>
+        <div class="fp-side">
+          <button class="fp-lang" id="fpLang">EN</button>
+          <div class="fp-level">+<span id="fpLevel">0</span></div>
+        </div>
+      </div>
+
+      <div class="fp-value-row">
+        <span class="fp-label" data-i18n="tributeValue">贡品价值</span>
+        <span class="fp-value"><b id="fpValue">320</b><em>G</em></span>
+      </div>
+      <div class="fp-trait hidden" id="fpTrait"></div>
+
+      <div class="fp-great-row">
+        <div class="fp-great">
+          <span class="fp-great-label" data-i18n="greatPreview">大成功</span>
+          <b id="fpGreatLevel">+2</b>
+          <span class="fp-great-gain" id="fpGreatGain">+160 G · 2.5×</span>
+        </div>
+        <div class="fp-charge">
+          <div class="pips" id="fpPips"></div>
+          <span class="fp-charge-text" id="fpChargeText">0 / 10</span>
+        </div>
+      </div>
+
+      <div class="fp-odds" id="fpOdds">
+        <div class="odd break"><span data-i18n="outBreak">破坏</span><b>0.0%</b></div>
+        <div class="odd damage"><span data-i18n="outDamage">损伤</span><b>9.5%</b></div>
+        <div class="odd hold"><span data-i18n="outHold">维持</span><b>23.8%</b></div>
+        <div class="odd success"><span data-i18n="outSuccess">成功</span><b>57.2%</b></div>
+        <div class="odd great"><span data-i18n="outGreat">大成功</span><b>9.5%</b></div>
+      </div>
+
+      <div class="fp-tickets" id="fpTickets">
+        <div class="fp-ticket-head"><span data-i18n="ticketPanel">本锤签数</span><b id="fpTicketTotal">100.0</b></div>
+        <div class="fp-ticket-row" id="fpTicketRow"></div>
+      </div>
+
+      <div class="fp-heatbar"><i id="fpHeatFill"></i></div>
+      <div class="fp-quota" id="fpQuota"></div>
+      <div class="fp-log" id="fpLog"></div>
+      <div class="fp-inv" id="fpInv"></div>
+
+      <div class="fp-actions">
+        <button class="btn primary" id="btnSwing" data-i18n="swing">挥锤</button>
+        <button class="btn" id="btnSheathe" data-i18n="sheathe">收锤</button>
+        <button class="btn ghost" id="btnTakeSword" data-i18n="takeSword">取下</button>
+      </div>
+      <div class="fp-hint" data-i18n="forgeHint">点击画面或按空格挥锤 · Esc 收锤 · 按 F 或点“取下”把剑拿在手上</div>
+    </div>
+  </div>
+
+  <!-- 全屏覆盖：开始、天数、结局、教程、初始遗物 -->
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card" id="overlayCard"></div>
+  </div>
+
+  <!-- 飘字 -->
+  <div id="toast" class="toast"></div>
+  <div id="resultBanner" class="result-banner"><span id="resultBannerText"></span></div>
+
+  <!-- 触屏摇杆 -->
+  <div id="joystick" class="joystick hidden"><div class="joystick-knob"></div></div>
+
+  <!-- 加载 -->
+  <div id="loading" class="loading">
+    <div class="loading-mark">
+      <svg viewBox="0 0 32 32"><path d="M4 10h15.5l-2.2 4.2h-2.6v2.6c0 4.2-3.2 6.4-7.4 6.4v-6.4H4z" fill="currentColor"/><path d="M18.5 10.2 24.6 6.6l4 2.2-5.2 5.6z" fill="currentColor" opacity=".55"/><path d="M9.4 23.2h8.2V26H9.4z" fill="currentColor" opacity=".7"/><path d="M11.7 26h3.6v3.4h-3.6z" fill="currentColor" opacity=".45"/></svg>
+    </div>
+    <div class="loading-text" data-i18n="loading">铁匠铺正在苏醒…</div>
+  </div>
+</div>
+
+<script>
+  // 每次打开都用新的时间戳加载脚本，避免浏览器缓存旧版配置/逻辑
+  (function () {
+    var stamp = '?v=' + Date.now();
+    var files = [
+      'vendor/three.min.js',
+      'config.js',
+      'audio.js',
+      'world.js',
+      'game.js'
+    ];
+    for (var i = 0; i < files.length; i++) {
+      var s = document.createElement('script');
+      s.src = files[i] + stamp;
+      s.async = false;
+      document.head.appendChild(s);
+    }
+  })();
+</script>
+</body>
+</html>
