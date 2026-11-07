@@ -32,7 +32,9 @@
 
 ## 环境要求
 
-- Autodesk Maya（PySide2 或 PySide6 均可）
+- Autodesk Maya —— **自测版本为 Maya 2025**
+  - 不强制指定 2025；其他版本（如 2022–2026）可能也能运行，但未逐一测试，部分功能可能失效
+  - PySide2 或 PySide6 均可
 - 可选：`requests`（在线市场加速；缺失时自动回退到内置 urllib）
 
 ## 安装 / 启动
