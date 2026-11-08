@@ -17,7 +17,7 @@ NODE_INFO = {
     "node_id": "0x001414A0",
     "run": "cmds.openForgeMaster()",
     "tags": ["游戏", "锻造", "休闲"],
-    "github": "https://github.com/MengXingXiaoMing",
+    "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x001414A0",
 }
 
 import inspect
