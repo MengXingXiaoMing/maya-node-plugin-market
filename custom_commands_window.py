@@ -4097,7 +4097,12 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.apply_filter(self.search_box.text())
 
     def run_plugin(self, plugin):
-        ok, message = node_market.run_node_plugin(plugin)
+        # 未加载时点主按钮 = 只加载插件（注册节点/命令，不执行 run）；
+        # 已加载时点主按钮（显示"运行"）= 执行 NODE_INFO.run
+        if not node_market.plugin_loaded(plugin.path):
+            ok, message = node_market.load_plugin_file(plugin.path)
+        else:
+            ok, message = node_market.run_node_plugin(plugin)
         self.notify("%s：%s" % (plugin.title, message), ok)
         if not ok:
             cmds.warning("运行插件失败（%s）：%s" % (plugin.title, message))
