@@ -786,8 +786,46 @@ def forget_plugin_modules(path):
             continue
 
 
+def defines_maya_plugin(path):
+    """文件里是否定义了 Maya 插件入口 initializePlugin。"""
+    try:
+        text = read_text(path) or ""
+    except Exception:
+        return False
+    return "def initializePlugin" in text
+
+
+def is_script_plugin(plugin):
+    """纯脚本插件：不注册节点、不注册命令，文件里也没有 initializePlugin。
+
+    这类插件不能用 loadPlugin 加载（会直接失败），只能直接执行 run。
+    """
+    if not plugin or not plugin.path:
+        return False
+    if plugin.node_name or plugin.commands:
+        return False
+    return not defines_maya_plugin(plugin.path)
+
+
+def _run_expression(plugin, note=""):
+    if sys.version_info[0] < 3:
+        return False, "Python 2 不支持 run 表达式，请改用注册命令"
+    namespace = {"cmds": cmds, "mel": mel, "__file__": plugin.path}
+    exec(compile(plugin.run, plugin.path, "exec"), namespace)
+    return True, note + "已运行"
+
+
 def run_node_plugin(plugin):
-    """每次运行先尝试卸载再重新加载，然后按节点约定执行。"""
+    """脚本类插件直接执行 run；节点类插件先卸载重载再执行。"""
+    # 纯脚本不注册任何东西，跳过卸载/加载，避免 loadPlugin 报错
+    if is_script_plugin(plugin):
+        if not plugin.run:
+            return True, "脚本插件没有可执行的 run"
+        try:
+            return _run_expression(plugin)
+        except Exception as exc:
+            return False, str(exc)
+
     note = ""
     was_loaded = plugin_loaded(plugin.path)
     need_load = not was_loaded
