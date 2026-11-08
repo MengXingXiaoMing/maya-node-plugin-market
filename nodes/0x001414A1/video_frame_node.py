@@ -1370,7 +1370,9 @@ def open_window():
 
 # ---------------------------------------------------------------------------
 # 运行命令（市场「运行」按钮 -> cmds.createVideoFrame()）
-# 创建一个默认 videoFrameNode 节点并接好 time，选中让用户在属性面板设置视频。
+# 类比魔方绑定：点运行直接生成一个完整可用的视频贴图案例
+#   videoFrameNode + file 纹理 + place2d + 屏幕平面 + lambert 材质
+# 用户只需在 videoFrameNode 的 videoPath 属性填视频路径，播放时间轴即可看到视频。
 # ---------------------------------------------------------------------------
 class CreateVideoFrameCommand(ompx.MPxCommand):
     kCommandName = "createVideoFrame"
@@ -1379,13 +1381,33 @@ class CreateVideoFrameCommand(ompx.MPxCommand):
         ompx.MPxCommand.__init__(self)
 
     def doIt(self, args):
-        node = create_video_node()
-        try:
-            import maya.cmds as cmds
-            cmds.select(node, replace=True)
-            self.setResult(node)
-        except Exception:
-            self.setResult(node)
+        import maya.cmds as cmds
+
+        # 1. 节点 + file 纹理 + place2d（接好 outFile -> fileTextureName、outFrame -> frameExtension）
+        result = create_video_texture(name="videoFrame1")
+        node = result["node"]
+        file_node = result["file"]
+
+        # 2. 一块 16:9 的屏幕平面
+        screen = cmds.polyPlane(width=6.4, height=3.6,
+                                subdivisionsX=1, subdivisionsY=1,
+                                name="videoScreen", ch=False)[0]
+        cmds.xform(screen, translation=(0, 0, 0), rotation=(90, 0, 0))
+
+        # 3. lambert 材质，把视频纹理接上
+        shader = cmds.shadingNode("lambert", asShader=True, name="videoMat")
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True,
+                       name="videoMatSG")
+        cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
+        cmds.connectAttr(file_node + ".outColor", shader + ".color", force=True)
+
+        # 4. 材质赋给屏幕
+        shape = (cmds.listRelatives(screen, shapes=True) or [screen])[0]
+        cmds.sets(shape, edit=True, forceElement=sg)
+
+        # 5. 选中节点，提示用户去属性面板设置视频路径
+        cmds.select(node, replace=True)
+        self.setResult(node)
 
     def isUndoable(self):
         return False
