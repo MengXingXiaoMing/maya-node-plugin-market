@@ -60,19 +60,27 @@ cmds.loadPlugin(r".../nodes/0x001414A1/video_frame_node.py")
 
 ## 使用方法
 
-### 1. 市场「运行」按钮（推荐，一键演示）
+### 1. 市场「运行」按钮
 
-在节点插件市场里点本节点的「运行」，会自动执行 `test_video_frame_node.py`：
+在节点插件市场里点本节点的「运行」，会执行 `cmds.createVideoFrame()`：
 
-1. 加载插件；
-2. 没填视频就用 ffmpeg 现生成一段 4 秒彩条测试视频；
-3. 整段预转码到缓存；
-4. 建一块 16:9 屏幕贴上视频纹理，设好场景帧率和时间轴，自动播放；
-5. 输出窗口打印尺寸、帧率、帧号映射、抽出的帧文件等校验信息。
+1. 创建一个 `videoFrameNode` 节点（默认名 `videoFrame1`）；
+2. 自动连接 `time1.outTime` 到节点的 `time`；
+3. 选中该节点，在属性面板设置 `videoPath` 即可。
 
-想用自己的视频，编辑 `test_video_frame_node.py` 顶部的 `VIDEO_PATH`，再点运行。
+这是和魔方绑定一样的轻量运行方式——只创建节点，不自动生成视频或建屏幕。
 
-### 2. 图形界面
+### 2. 完整演示（可选）
+
+运行 `test_video_frame_node.py` 可以一键演示：自动生成测试视频、预转码、建屏幕贴纹理、设时间轴并播放。
+
+```python
+exec(open(r".../nodes/0x001414A1/test_video_frame_node.py", encoding="utf-8").read())
+```
+
+想用自己的视频，编辑 `test_video_frame_node.py` 顶部的 `VIDEO_PATH`。
+
+### 3. 图形界面
 
 ```python
 import videoFrameNode
@@ -85,7 +93,7 @@ videoFrameNode.open_window()
 3. 点「创建文件纹理」或「创建图像平面」。
 4. （可选）点「预转码整段」把整段视频转成缓存，播放最流畅。
 
-### 3. 脚本创建 file 纹理
+### 4. 脚本创建 file 纹理
 
 ```python
 import videoFrameNode
@@ -98,14 +106,14 @@ result = videoFrameNode.create_video_texture(
 # 把 file 节点的 outColor 接到材质即可
 ```
 
-### 4. 脚本创建图像平面
+### 5. 脚本创建图像平面
 
 ```python
 result = videoFrameNode.create_video_image_plane(r"D:/ref/action.mp4")
 # result = {"node": 节点, "imagePlane": 图像平面, "transform": 变换}
 ```
 
-### 5. 只创建节点
+### 6. 只创建节点
 
 ```python
 node = videoFrameNode.create_video_node(r"D:/ref/action.mp4", loop=True)
