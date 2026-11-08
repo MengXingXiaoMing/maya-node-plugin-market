@@ -23,7 +23,7 @@ wmv / m4v / ts / mxf …，取决于本机 ffmpeg 的解码器）**实时抽成 
 - **PNG / JPG**：PNG 无损；JPG 可调质量（1 最好，31 最差）。
 - **视频帧率自动探测**：默认自动读取视频 fps，也可手动指定。
 - **状态输出**：节点输出当前状态、是否有效、宽高、帧率、总帧数。
-- **自带 GUI**：`cmds.openVideoFrame()` 打开操作窗口，浏览视频、设置参数、创建纹理/图像平面、预转码、清缓存。
+- **可选 GUI**：`videoFrameNode.open_window()` 打开操作窗口，浏览视频、设置参数、创建纹理/图像平面、预转码、清缓存。
 
 ## 依赖
 
@@ -60,11 +60,23 @@ cmds.loadPlugin(r".../nodes/0x001414A1/video_frame_node.py")
 
 ## 使用方法
 
-### 1. 图形界面（推荐）
+### 1. 市场「运行」按钮（推荐，一键演示）
+
+在节点插件市场里点本节点的「运行」，会自动执行 `test_video_frame_node.py`：
+
+1. 加载插件；
+2. 没填视频就用 ffmpeg 现生成一段 4 秒彩条测试视频；
+3. 整段预转码到缓存；
+4. 建一块 16:9 屏幕贴上视频纹理，设好场景帧率和时间轴，自动播放；
+5. 输出窗口打印尺寸、帧率、帧号映射、抽出的帧文件等校验信息。
+
+想用自己的视频，编辑 `test_video_frame_node.py` 顶部的 `VIDEO_PATH`，再点运行。
+
+### 2. 图形界面
 
 ```python
-import maya.cmds as cmds
-cmds.openVideoFrame()
+import videoFrameNode
+videoFrameNode.open_window()
 ```
 
 在窗口里：
@@ -73,7 +85,7 @@ cmds.openVideoFrame()
 3. 点「创建文件纹理」或「创建图像平面」。
 4. （可选）点「预转码整段」把整段视频转成缓存，播放最流畅。
 
-### 2. 脚本创建 file 纹理
+### 3. 脚本创建 file 纹理
 
 ```python
 import videoFrameNode
@@ -86,14 +98,14 @@ result = videoFrameNode.create_video_texture(
 # 把 file 节点的 outColor 接到材质即可
 ```
 
-### 3. 脚本创建图像平面
+### 4. 脚本创建图像平面
 
 ```python
 result = videoFrameNode.create_video_image_plane(r"D:/ref/action.mp4")
 # result = {"node": 节点, "imagePlane": 图像平面, "transform": 变换}
 ```
 
-### 4. 只创建节点
+### 5. 只创建节点
 
 ```python
 node = videoFrameNode.create_video_node(r"D:/ref/action.mp4", loop=True)
