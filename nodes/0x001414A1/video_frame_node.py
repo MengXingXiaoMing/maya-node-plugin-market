@@ -60,7 +60,12 @@ NODE_INFO = {
     "version": "1.0.0",
     "node": "videoFrameNode",
     "node_id": "0x001414A1",
-    "run": "cmds.openVideoFrame()",
+    "run": (
+        "import os, videoFrameNode as _v; "
+        "_here=os.path.dirname(_v.__file__); "
+        "exec(compile(open(os.path.join(_here,'test_video_frame_node.py'),encoding='utf-8').read(),'test_video_frame_node.py','exec')); "
+        "main()"
+    ),
     "tags": ["视频", "序列帧", "工具", "ffmpeg", "贴图"],
     "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x001414A1",
 }
@@ -1369,26 +1374,6 @@ def open_window():
 
 
 # ---------------------------------------------------------------------------
-# 运行命令（市场「运行」按钮 -> cmds.openVideoFrame()）
-# ---------------------------------------------------------------------------
-class OpenVideoFrameCommand(ompx.MPxCommand):
-    kCommandName = "openVideoFrame"
-
-    def __init__(self):
-        ompx.MPxCommand.__init__(self)
-
-    def doIt(self, args):
-        open_window()
-
-    def isUndoable(self):
-        return False
-
-    @staticmethod
-    def creator():
-        return ompx.asMPxPtr(OpenVideoFrameCommand())
-
-
-# ---------------------------------------------------------------------------
 # 插件注册
 # ---------------------------------------------------------------------------
 def initializePlugin(mobject):
@@ -1406,10 +1391,6 @@ def initializePlugin(mobject):
             VideoFrameNode.nodeCreator,
             VideoFrameNode.nodeInitializer,
         )
-        plugin.registerCommand(
-            OpenVideoFrameCommand.kCommandName,
-            OpenVideoFrameCommand.creator,
-        )
         print(u"成功注册节点: %s" % VideoFrameNode.kNodeName)
     except Exception as err:
         sys.stderr.write(u"注册节点失败: %s, 错误: %s\n"
@@ -1420,7 +1401,6 @@ def initializePlugin(mobject):
 def uninitializePlugin(mobject):
     plugin = ompx.MFnPlugin(mobject)
     try:
-        plugin.deregisterCommand(OpenVideoFrameCommand.kCommandName)
         plugin.deregisterNode(kPluginNodeId)
         print(u"成功注销节点: %s" % VideoFrameNode.kNodeName)
     except Exception as err:
