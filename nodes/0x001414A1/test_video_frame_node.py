@@ -49,11 +49,23 @@ AUTO_PLAY = True            # 建完后自动开始播放
 try:
     HERE = os.path.dirname(os.path.abspath(__file__))
 except NameError:
-    import videoFrameNode as _v
-    HERE = os.path.dirname(os.path.abspath(_v.__file__))
+    # 手动 exec 时 __file__ 未定义，从已知的几种可能位置推导
+    for _cand in (
+        os.path.abspath(r"e:\code\my_code\IterativeVersion\Maya_PY3_plug-in_2025\ui\qt_ui\custom_commands\nodes\0x001414A1"),
+        os.path.abspath(r"e:\code\my_code\IterativeVersion\Maya_PY3_plug-in_2025\2023\node"),
+    ):
+        if os.path.isfile(os.path.join(_cand, "video_frame_node.py")) or \
+           os.path.isfile(os.path.join(_cand, "videoFrameNode.py")):
+            HERE = _cand
+            break
+    else:
+        HERE = os.getcwd()
 
 PLUGIN_FILE = os.path.join(HERE, "video_frame_node.py")
-PLUGIN_NAME = "videoFrameNode"
+if not os.path.isfile(PLUGIN_FILE):
+    PLUGIN_FILE = os.path.join(HERE, "videoFrameNode.py")
+# Maya 用文件名（去扩展名）作为 Python 插件的注册名
+PLUGIN_NAME = os.path.splitext(os.path.basename(PLUGIN_FILE))[0]
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -78,8 +90,11 @@ def ensure_plugin():
 
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
-    # 模块缓存会让 unloadPlugin 报 "still in use"，重载前必须清掉
-    sys.modules.pop("videoFrameNode", None)
+    # 模块缓存会让 unloadPlugin 报 "still in use"，重载前必须清掉。
+    # 新文件名是 video_frame_node.py（模块名 video_frame_node），
+    # 旧文件名是 videoFrameNode.py（模块名 videoFrameNode），两个都清。
+    for _modname in ("videoFrameNode", "video_frame_node"):
+        sys.modules.pop(_modname, None)
 
     loaded = False
     try:
@@ -101,8 +116,9 @@ def ensure_plugin():
         cmds.loadPlugin(PLUGIN_FILE)
         _log(u"插件已加载: %s" % PLUGIN_FILE)
 
-    import videoFrameNode
-    return videoFrameNode
+    import importlib
+    vfn = importlib.import_module(PLUGIN_NAME)
+    return vfn
 
 
 # ---------------------------------------------------------------------------
