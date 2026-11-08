@@ -6,7 +6,8 @@ u"""videoFrameNode 效果演示 / 自测脚本
 
     exec(open(r".../nodes/0x001414A1/test_video_frame_node.py", encoding="utf-8").read())
 
-也可以在节点插件市场里点本节点的「运行」按钮，会自动执行本脚本。
+注意：市场点本节点的「运行」只会创建一个默认节点（cmds.createVideoFrame()），
+不会自动执行本脚本。要跑完整演示，请手动运行本脚本。
 
 它会自动完成这些事：
 
