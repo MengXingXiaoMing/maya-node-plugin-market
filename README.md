@@ -1,4 +1,4 @@
-﻿# Maya 节点插件市场
+# Maya 节点插件市场
 
 作者：**詹康明 (Kangming Zhan)**
 
@@ -94,6 +94,90 @@ NODE_INFO = {
 ```
 
 运行顺序：`NODE_INFO.run` → 注册命令 → 创建节点。
+
+## 本地使用（不上传 GitHub）
+
+只给自己或团队用，不需要发布到在线目录，也不需要任何 GitHub 操作。
+市场扫描的就是本地 `nodes/` 目录，插件放进去就能用。
+
+### 方式一：界面导入（推荐）
+
+市场窗口右上角「导入插件」：
+
+- **导入节点文件 (.py)**：选单个 `.py` 文件
+- **导入插件文件夹**：选整个文件夹（连带依赖文件、图标、子目录一起复制）
+
+市场会按节点序号自动归档到 `nodes/<节点序号>/`，并自动刷新列表。
+
+### 方式二：手动放入
+
+```
+maya-node-plugin-market/
+└─ nodes/
+   └─ 0x00141A00/          文件夹名 = 节点序号
+      ├─ my_tool.py
+      ├─ icon.png          可选
+      └─ ...               插件依赖的其它文件
+```
+
+放好后点市场里的「重新扫描」。
+
+文件夹名必须就是节点序号（`0x00141A00` 或十进制数字），不匹配会被跳过。
+
+### 节点插件怎么写
+
+```python
+NODE_INFO = {
+    "name": "我的工具",
+    "description": "一句话说明",
+    "author": "你的名字",
+    "version": "1.0.0",
+    "node": "myToolNode",      # 节点类型名，必须
+    "node_id": "0x00141A00",   # 必须，且与文件夹名一致
+    "run": "cmds.myTool()",    # 可选
+    "tags": ["工具"],
+}
+```
+
+也可以不写 `NODE_INFO`，由文件里的 `registerNode` / `MTypeId` 自动识别。
+
+这类插件在市场上的操作是两段：**加载**（注册节点类型）→ **运行**（执行 `run`）。
+
+### 脚本插件怎么写
+
+不注册 Maya 节点的纯 Python 脚本，同样可以在本地使用：
+
+```python
+# -*- coding: utf-8 -*-
+NODE_INFO = {
+    "name": "我的脚本",
+    "node_id": "0x00141A10",   # 必须，且与文件夹名一致
+    "run": "import runpy; runpy.run_path(__file__, run_name='__main__')",
+    "scene_node": False,
+}
+
+import maya.cmds as cmds
+
+
+def main():
+    cmds.polyCube(name="myToolCube")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+要点：
+
+- **不要**写 `"node"`，也**不要**写 `initializePlugin` / `registerNode` / `registerCommand`，否则会被当成节点或命令插件（需要加载）
+- 必须有 `run`
+- 卡片状态显示「● 脚本」，点一次「运行」就执行，没有加载步骤
+
+### 注意
+
+- 节点序号必须唯一，不要占用别人已用的序号段
+- 工具类插件（不往场景里放节点）加 `"scene_node": False`，避免别人打开场景时被提示缺插件
+- 本地插件只出现在「本地」页；只有想在在线页展示时，才需要「投稿到在线目录」
 
 ## 在线目录
 
