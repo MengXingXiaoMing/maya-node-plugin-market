@@ -1207,16 +1207,23 @@ class PluginCard(QtWidgets.QFrame):
             self.update()
 
     def refresh_state(self):
+        script = node_market.is_script_plugin(self.plugin)
         loaded = node_market.plugin_loaded(self.plugin.path)
         if loaded:
             self.state_label.setText("● 已加载")
+            self.state_label.setObjectName("loadedText")
+        elif script:
+            self.state_label.setText("● 脚本")
             self.state_label.setObjectName("loadedText")
         else:
             self.state_label.setText("● 未加载")
             self.state_label.setObjectName("unloadedText")
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
-        if not loaded:
+        if script:
+            self.primary_button.setText("运行")
+            self.primary_button.setEnabled(True)
+        elif not loaded:
             self.primary_button.setText("加载")
             self.primary_button.setEnabled(True)
         elif self.plugin.is_runnable():
@@ -1587,7 +1594,9 @@ class DetailDialog(QtWidgets.QDialog):
             github_button.clicked.connect(lambda: open_url(plugin.github))
             buttons.addWidget(github_button)
         buttons.addStretch(1)
-        run_button = QtWidgets.QPushButton("运行" if node_market.plugin_loaded(plugin.path) else "加载")
+        is_script = node_market.is_script_plugin(plugin)
+        run_button = QtWidgets.QPushButton(
+            "运行" if (is_script or node_market.plugin_loaded(plugin.path)) else "加载")
         run_button.setObjectName("primaryButton")
         run_button.clicked.connect(lambda: (self.accept(), on_primary(plugin)))
         buttons.addWidget(run_button)
@@ -4097,9 +4106,9 @@ class MarketWindow(MayaQWidgetDockableMixin, QtWidgets.QMainWindow):
         self.apply_filter(self.search_box.text())
 
     def run_plugin(self, plugin):
-        # 脚本类插件（没有 node_name）不需要加载，直接运行；
+        # 纯脚本插件没有可加载的东西，直接运行；
         # 节点类插件：未加载时只注册，已加载时才执行 run。
-        if not plugin.node_name:
+        if node_market.is_script_plugin(plugin):
             ok, message = node_market.run_node_plugin(plugin)
         elif not node_market.plugin_loaded(plugin.path):
             ok, message = node_market.load_plugin_file(plugin.path)
