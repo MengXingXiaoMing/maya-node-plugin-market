@@ -24,7 +24,7 @@ NODE_INFO = {
     "node_id": "0x00141496",
     "run": "cmds.openScreenRecording()",
     "tags": ["截屏", "录屏", "工具"],
-    "github": "https://github.com/MengXingXiaoMing",
+    "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x00141496",
     # 工具类插件：节点不进场景文件。保存场景时不写入 fileInfo 需求清单，
     # 别人打开文件也不会被提示安装它。
     "scene_node": False,
