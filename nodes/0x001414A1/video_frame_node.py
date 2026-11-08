@@ -609,7 +609,7 @@ class VideoFrameNode(ompx.MPxNode):
                 matched = True
                 break
         if not matched:
-            return ompx.MPxNode.kUnknownParameter
+            return om.MStatus.kUnknownParameter
 
         video = data_block.inputValue(self.aVideoPath).asString()
         cache_root = data_block.inputValue(self.aCacheRoot).asString()
@@ -664,7 +664,7 @@ class VideoFrameNode(ompx.MPxNode):
         handle = data_block.outputValue(self.aOutValid)
         handle.setBool(result["valid"])
         handle.setClean()
-        return None
+        return om.MStatus.kSuccess
 
     @classmethod
     def nodeCreator(cls):
