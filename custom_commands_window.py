@@ -946,6 +946,14 @@ def open_url(url):
         webbrowser.open(url)
 
 
+def entry_source_url(entry):
+    """在线条目的来源地址：能定位到子目录时，直接跳到插件在仓库里的位置。"""
+    if entry.repo and entry.subpath:
+        return "https://github.com/%s/tree/%s/%s" % (
+            entry.repo, entry.branch or "main", entry.subpath)
+    return entry.github
+
+
 # ---------------------------------------------------------------------------
 # 插件卡片
 # ---------------------------------------------------------------------------
@@ -1113,18 +1121,19 @@ class PluginCard(QtWidgets.QFrame):
         self.detail_button.setObjectName("ghostButton")
         self.detail_button.setCursor(Qt.PointingHandCursor)
         self.detail_button.clicked.connect(lambda: self._on_detail(self.plugin))
-        self.folder_button = QtWidgets.QPushButton("文件夹")
-        self.folder_button.setObjectName("ghostButton")
-        self.folder_button.setCursor(Qt.PointingHandCursor)
-        self.folder_button.setToolTip("打开插件所在文件夹：\n%s" % plugin.folder)
-        self.folder_button.clicked.connect(lambda: node_market.open_in_explorer(self.plugin.path))
+        self.github_button = QtWidgets.QPushButton("GitHub")
+        self.github_button.setObjectName("ghostButton")
+        self.github_button.setCursor(Qt.PointingHandCursor)
+        self._github_url = plugin.github or node_market.DEFAULT_GITHUB_URL
+        self.github_button.setToolTip("在浏览器打开插件来源：\n%s" % self._github_url)
+        self.github_button.clicked.connect(lambda: open_url(self._github_url))
         self.primary_button = QtWidgets.QPushButton("加载")
         self.primary_button.setObjectName("primaryButton")
         self.primary_button.setCursor(Qt.PointingHandCursor)
         self.primary_button.clicked.connect(self._primary_clicked)
         footer.addWidget(self.star_button)
         footer.addWidget(self.detail_button)
-        footer.addWidget(self.folder_button)
+        footer.addWidget(self.github_button)
         footer.addStretch(1)
         footer.addWidget(self.primary_button)
         layout.addLayout(footer)
@@ -1162,6 +1171,7 @@ class PluginCard(QtWidgets.QFrame):
     def _show_menu(self, position):
         menu = QtWidgets.QMenu(self)
         menu.addAction("打开所在文件夹", lambda: node_market.open_in_explorer(self.plugin.path))
+        menu.addAction("打开 GitHub", lambda: open_url(self._github_url))
         menu.addAction("复制节点序号", lambda: QtWidgets.QApplication.clipboard().setText(
             self.plugin.node_id_text))
         menu.addAction("复制插件路径", lambda: QtWidgets.QApplication.clipboard().setText(
@@ -1369,17 +1379,20 @@ class OnlineCard(QtWidgets.QFrame):
         self.detail_button.setObjectName("ghostButton")
         self.detail_button.setCursor(Qt.PointingHandCursor)
         self.detail_button.clicked.connect(lambda: self._on_detail(self.entry))
-        self.folder_button = QtWidgets.QPushButton("文件夹")
-        self.folder_button.setObjectName("ghostButton")
-        self.folder_button.setCursor(Qt.PointingHandCursor)
-        self.folder_button.clicked.connect(lambda: node_market.open_in_explorer(self.entry.path))
+        self.github_button = QtWidgets.QPushButton("GitHub")
+        self.github_button.setObjectName("ghostButton")
+        self.github_button.setCursor(Qt.PointingHandCursor)
+        self._github_url = entry_source_url(entry)
+        self.github_button.setToolTip("在浏览器打开插件来源：\n%s" % self._github_url)
+        self.github_button.clicked.connect(lambda: open_url(self._github_url))
+        self.github_button.setVisible(bool(self._github_url))
         self.primary_button = QtWidgets.QPushButton("安装")
         self.primary_button.setObjectName("primaryButton")
         self.primary_button.setCursor(Qt.PointingHandCursor)
         self.primary_button.clicked.connect(lambda: self._on_install(self.entry))
         footer.addWidget(self.star_button)
         footer.addWidget(self.detail_button)
-        footer.addWidget(self.folder_button)
+        footer.addWidget(self.github_button)
         footer.addStretch(1)
         footer.addWidget(self.primary_button)
         layout.addLayout(footer)
@@ -1418,10 +1431,6 @@ class OnlineCard(QtWidgets.QFrame):
     def set_installed(self, plugin):
         self._installed = plugin
         self.entry.path = plugin.path if plugin else ""
-        self.folder_button.setToolTip(
-            "打开已安装目录：\n%s" % plugin.path if plugin and plugin.path
-            else "安装后可以打开本地目录")
-        self.folder_button.setVisible(bool(plugin and plugin.path))
         if plugin is None:
             self.state_label.setText("未安装")
             self.state_label.setObjectName("unloadedText")
@@ -1470,8 +1479,8 @@ class OnlineCard(QtWidgets.QFrame):
                 "https://github.com/%s" % self.entry.repo))
         menu.addAction("取消收藏" if self._favorite else "收藏插件",
                        lambda: self._favorite_clicked())
-        if self.entry.github:
-            menu.addAction("打开 GitHub", lambda: open_url(self.entry.github))
+        if self._github_url:
+            menu.addAction("打开 GitHub", lambda: open_url(self._github_url))
         if self.entry.path:
             menu.addAction("打开本地文件夹", lambda: node_market.open_in_explorer(self.entry.path))
         else:
@@ -1662,10 +1671,12 @@ class OnlineDetailDialog(QtWidgets.QDialog):
 
         layout.addStretch(1)
         buttons = QtWidgets.QHBoxLayout()
-        if entry.github:
+        source_url = entry_source_url(entry)
+        if source_url:
             github_button = QtWidgets.QPushButton("GitHub")
             github_button.setObjectName("ghostButton")
-            github_button.clicked.connect(lambda: open_url(entry.github))
+            github_button.setToolTip(source_url)
+            github_button.clicked.connect(lambda: open_url(source_url))
             buttons.addWidget(github_button)
         if installed is not None:
             folder_button = QtWidgets.QPushButton("打开文件夹")
