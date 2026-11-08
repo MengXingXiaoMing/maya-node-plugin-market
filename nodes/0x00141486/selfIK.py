@@ -9,7 +9,7 @@ NODE_INFO = {
     "category": "rigging",
     "tags": ["样条", "IK"],
     "maya_versions": ["2025"],
-    "github": "https://github.com/MengXingXiaoMing",
+    "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x00141486",
 }
 
 import maya.api.OpenMaya as om
