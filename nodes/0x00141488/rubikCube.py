@@ -10,7 +10,7 @@ NODE_INFO = {
     "node_id": "0x00141488",
     "run": "cmds.rubikCube()",
     "tags": ["绑定", "程序化", "魔方"],
-    "github": "https://github.com/MengXingXiaoMing",
+    "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x00141488",
 }
 
 """
