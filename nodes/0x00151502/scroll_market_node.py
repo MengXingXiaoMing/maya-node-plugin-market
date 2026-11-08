@@ -18,7 +18,7 @@ NODE_INFO = {
     "node_id": "0x00151502",
     "run": "cmds.openScrollMarket()",
     "tags": ["卷轴", "附着", "窗口"],
-    "github": "https://github.com/MengXingXiaoMing",
+    "github": "https://github.com/MengXingXiaoMing/maya-node-plugin-market/tree/main/nodes/0x00151502",
 }
 
 import inspect
