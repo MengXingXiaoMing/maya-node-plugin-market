@@ -61,8 +61,8 @@ NODE_INFO = {
     "node": "videoFrameNode",
     "node_id": "0x001414A1",
     "run": (
-        "import os, videoFrameNode as _v; "
-        "_here=os.path.dirname(_v.__file__); "
+        "import os; "
+        "_here=os.path.dirname(__file__); "
         "exec(compile(open(os.path.join(_here,'test_video_frame_node.py'),encoding='utf-8').read(),'test_video_frame_node.py','exec')); "
         "main()"
     ),
